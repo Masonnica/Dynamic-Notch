@@ -70,7 +70,7 @@ BLOB_FADE = 0.16                             # thời gian giọt nước thu nh
 RING_SOURCE = "battery"
 
 # --- Phiên bản ứng dụng & Cập nhật tự động ---
-APP_VERSION = "1.0.1"                        # Phiên bản hiện tại của app
+APP_VERSION = "1.0.2"                        # Phiên bản hiện tại của app
 GITHUB_REPO = "Masonnica/Dynamic-Notch"      # Kho GitHub chính thức
 
 # --- Cửa sổ Cài đặt ---
