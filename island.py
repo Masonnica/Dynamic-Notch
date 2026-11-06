@@ -357,8 +357,8 @@ class Island:
             c_accent = (0, 102, 204)
         elif is_black:
             c_main = (255, 255, 255)
-            c_sub = (165, 165, 170)
-            c_dim = (100, 100, 105)
+            c_sub = (185, 185, 192)
+            c_dim = (115, 115, 120)
             c_panel = (28, 28, 30)
             c_panel_hover = (50, 50, 54)
             c_div = (42, 42, 46)
@@ -604,20 +604,25 @@ class Island:
             self.presenter.present(self._render_surf)
 
     def ring_info(self):
-        """(tỉ lệ 0..1, màu) cho vòng tròn bên trái: % pin nếu có pin, không thì tiến độ bài nhạc (theo RING_SOURCE)."""
-        src = self.settings["ring_source"]
-        if src in ("auto", "battery") and self.battery:
+        """(tỉ lệ 0..1, màu) cho vòng tròn bên trái: % pin hoặc tiến độ bài nhạc theo ring_source."""
+        src = self.settings.get("ring_source", "battery")
+        if src == "battery" and self.battery:
             pct, charging = self.battery
             color = GREEN if (charging or pct > 40) else (ORANGE if pct > 20 else CLOSE_RED)
             return pct / 100, color
-        if src in ("auto", "music") and self.duration > 0:
+        if src == "music" and self.duration > 0:
             return min(self.position() / self.duration, 1.0), GREEN
         return 0.0, GREEN
 
     def draw_top(self, surf, rect, expanded):
         th = self.theme()
         cy = COMPACT_H // 2
-        fmt = "%H:%M:%S" if (expanded and self.settings["show_seconds"]) else "%H:%M"
+        sec_mode = self.settings.get("seconds_mode")
+        if sec_mode is None:
+            sec_mode = "expand" if self.settings.get("show_seconds", True) else "none"
+
+        show_sec = (sec_mode == "both") or (expanded and sec_mode == "expand") or (not expanded and sec_mode == "compact")
+        fmt = "%H:%M:%S" if show_sec else "%H:%M"
         txt = self.f_time.render(datetime.now().strftime(fmt), True, th["main"])     # ảnh chữ giờ
         trect = txt.get_rect(center=(EXPAND_W // 2, cy))                        # căn giữa island
         surf.blit(txt, trect)

@@ -69,7 +69,7 @@ def main():
                 island.wheel(e.y)
             elif e.type == pygame.DROPFILE:                  # file được thả vào cửa sổ
                 island.add_file(e.file)
-            elif e.type in (pygame.KEYDOWN, pygame.TEXTINPUT):
+            elif e.type in (pygame.KEYDOWN, pygame.KEYUP, pygame.TEXTINPUT):
                 settings.handle_event(e)
 
         if time.monotonic() >= next_top:                     # mỗi 0.5 giây tự giành lại vị trí trên cùng

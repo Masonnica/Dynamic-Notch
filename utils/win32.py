@@ -526,28 +526,44 @@ def battery_status():
 
 
 def get_clipboard_text():
-    """Lấy nội dung văn bản từ clipboard của Windows."""
-    try:
-        if not user32.OpenClipboard(0):
-            return ""
+    """Lấy nội dung văn bản từ clipboard của Windows với thử lại nhiều lần."""
+    # Thử gọi API Windows OpenClipboard có retry (vì có thể app khác đang lock clipboard 1 vài mili giây)
+    for _ in range(5):
         try:
-            CF_UNICODETEXT = 13
-            h_glb = user32.GetClipboardData(CF_UNICODETEXT)
-            if not h_glb:
-                return ""
-            kernel32 = ctypes.windll.kernel32
-            kernel32.GlobalLock.restype = ctypes.c_void_p
-            ptr = kernel32.GlobalLock(h_glb)
-            if not ptr:
-                return ""
-            try:
-                return ctypes.wstring_at(ptr)
-            finally:
-                kernel32.GlobalUnlock(h_glb)
-        finally:
-            user32.CloseClipboard()
+            if user32.OpenClipboard(0):
+                try:
+                    CF_UNICODETEXT = 13
+                    h_glb = user32.GetClipboardData(CF_UNICODETEXT)
+                    if h_glb:
+                        kernel32 = ctypes.windll.kernel32
+                        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+                        kernel32.GlobalLock.restype = ctypes.c_void_p
+                        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+                        ptr = kernel32.GlobalLock(h_glb)
+                        if ptr:
+                            try:
+                                return ctypes.wstring_at(ptr)
+                            finally:
+                                kernel32.GlobalUnlock(h_glb)
+                finally:
+                    user32.CloseClipboard()
+        except Exception:
+            pass
+        time.sleep(0.02)
+
+    # Dự phòng qua tkinter nếu OpenClipboard trực tiếp thất bại
+    try:
+        import tkinter as tk
+        r = tk.Tk()
+        r.withdraw()
+        txt = r.clipboard_get()
+        r.destroy()
+        if txt:
+            return txt
     except Exception:
-        return ""
+        pass
+
+    return ""
 
 
 # -------------------------- Khởi động cùng Windows --------------------------

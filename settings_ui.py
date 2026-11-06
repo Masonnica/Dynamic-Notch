@@ -33,7 +33,7 @@ TOP_TABS = ("Chung", "Cá nhân hóa", "Lịch")
 BOTTOM_TAB = "Thông tin"
 TABS = ("Chung", "Cá nhân hóa", "Lịch", "Thông tin")
 
-RING_CHOICES = (("auto", "Tự động"), ("battery", "Pin"), ("music", "Nhạc"))
+RING_CHOICES = (("battery", "Pin"), ("music", "Nhạc"))
 PRESET_COLORS = (
     ("Đen", (4, 6, 10)),
     ("Đỏ", (235, 55, 65)),
@@ -42,6 +42,14 @@ PRESET_COLORS = (
     ("Hồng", (240, 70, 155)),
     ("Cam", (255, 135, 35)),
     ("Tím", (165, 80, 235)),
+)
+
+
+SECONDS_CHOICES = (
+    ("both", "Cả 2 chế độ"),
+    ("compact", "Chế độ thu gọn"),
+    ("expand", "Chế độ mở rộng"),
+    ("none", "Không hiển thị"),
 )
 
 
@@ -64,9 +72,12 @@ class SettingsWindow:
             self.window.get_surface().fill(KEY)
             self.window.flip()
         font_family = "segoeui,segoeuiemoji,segoeuisymbol"
+        # Dùng font chuẩn, hỗ trợ tiếng Việt và kerning chính xác
         self.f_title = pygame.font.SysFont(font_family, 24, bold=True)
         self.f_text = pygame.font.SysFont(font_family, 17, bold=True)
         self.f_small = pygame.font.SysFont(font_family, 14, bold=True)
+        # Font chữ phụ rõ nét (size 14 regular không bị dính chữ như synthetic bold)
+        self.f_sub = pygame.font.SysFont(font_family, 14, bold=False)
         self.f_tiny = pygame.font.SysFont(font_family, 12, bold=True)
         self.tab = 0                                         # tab đang chọn: 0 Chung, 1 Lịch
         self.ct = 0.0                                        # thời gian đã trôi qua của hiệu ứng đóng
@@ -80,6 +91,9 @@ class SettingsWindow:
         self.mouse = (-999, -999)
         self.input_url = ""        # nội dung đang gõ trong ô nhập link iCal
         self.input_active = False  # True: đang hiện ô nhập link iCal
+        self.dropdown_active = False # True: menu sổ xuống của Hiện giây đang mở
+        self._bksp_down = False    # Trạng thái đang giữ phím Backspace
+        self._bksp_timer = 0.0     # Mốc thời gian lần xóa kế tiếp khi đè phím
 
     # ------------------------------ Trạng thái ------------------------------
     @property
@@ -142,6 +156,12 @@ class SettingsWindow:
                     fn()
                     break
         self.prev_l = left
+
+        # Xử lý xóa liên tục khi đè giữ phím Backspace
+        if self.input_active and self._bksp_down:
+            if now >= self._bksp_timer and self.input_url:
+                self.input_url = self.input_url[:-1]
+                self._bksp_timer = now + 0.035  # Lặp lại nhanh (~28 ký tự/giây) giống chuẩn hệ điều hành
 
     def _hide(self):
         if self.presenter:
@@ -247,7 +267,7 @@ class SettingsWindow:
                 draw_aa_round_rect(s, th["accent"], r.inflate(-4, -4), (h - 4) // 2)
             elif r.collidepoint(mouse):
                 draw_aa_round_rect(s, th["panel_hover"], r.inflate(-4, -4), (h - 4) // 2)
-            draw_text(s, self.f_small, label, WHITE if on else th["sub"], center=r.center)
+            draw_text(s, self.f_small, label, WHITE if on else th["sub"], center=(r.centerx, r.centery - 1))
             self._hit(r, origin, lambda k=key: on_pick(k))
 
     def _switch(self, s, origin, mouse, right, y, on, on_toggle):
@@ -261,7 +281,7 @@ class SettingsWindow:
     def _row(self, s, y, title, sub, pad):
         th = self.island.theme()
         draw_text(s, self.f_text, title, th["main"], topleft=(pad, y))
-        draw_text(s, self.f_small, sub, th["sub"], topleft=(pad, y + 25))
+        draw_text(s, self.f_sub, sub, th["sub"], topleft=(pad, y + 27))
 
     def handle_event(self, e):
         """Xử lý phím khi ô nhập link iCal đang mở."""
@@ -269,20 +289,31 @@ class SettingsWindow:
             return
         if e.type == pygame.KEYDOWN:
             # Hỗ trợ Ctrl + V dán link từ clipboard
-            if e.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+            if (e.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL)) or \
+               (e.key == pygame.K_INSERT and (pygame.key.get_mods() & pygame.KMOD_SHIFT)):
                 clip = get_clipboard_text().strip()
                 if clip:
                     self.input_url += clip
                 return
             if e.key == pygame.K_BACKSPACE:
                 self.input_url = self.input_url[:-1]
+                self._bksp_down = True
+                self._bksp_timer = time.monotonic() + 0.35  # Chờ 350ms trước khi bắt đầu xóa liên tục
             elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self._submit_ical_url()
             elif e.key == pygame.K_ESCAPE:
                 self.input_active = False
                 self.input_url = ""
-                pygame.key.stop_text_input()
+                self._bksp_down = False
+                try:
+                    pygame.key.stop_text_input()
+                except Exception:
+                    pass
+        elif e.type == pygame.KEYUP:
+            if e.key == pygame.K_BACKSPACE:
+                self._bksp_down = False
         elif e.type == pygame.TEXTINPUT:
+            # Bỏ qua nếu đang bấm tổ hợp phím tắt Ctrl
             if not (pygame.key.get_mods() & pygame.KMOD_CTRL):
                 self.input_url += e.text
 
@@ -340,11 +371,12 @@ class SettingsWindow:
         threading.Thread(target=_run, daemon=True).start()
 
     def _switch_tab(self, i):
-        """Chuyển tab; nếu ô nhập iCal đang mở thì đóng lại trước."""
+        """Chuyển tab; nếu ô nhập iCal hoặc dropdown đang mở thì đóng lại trước."""
         if self.input_active:
             self.input_active = False
             self.input_url = ""
             pygame.key.stop_text_input()
+        self.dropdown_active = False
         self.tab = i
 
     def _content(self, s, origin, island):
@@ -374,7 +406,7 @@ class SettingsWindow:
             on = i == self.tab
             bg = th["accent"] if on else (th["panel_hover"] if r.collidepoint(mouse) else th["panel"])
             draw_aa_round_rect(s, bg, r, 12)
-            draw_text(s, self.f_text, name, WHITE if on else th["sub"], midleft=(r.left + 16, r.centery))
+            draw_text(s, self.f_text, name, WHITE if on else th["sub"], midleft=(r.left + 16, r.centery - 1))
             self._hit(r, origin, lambda i=i: self._switch_tab(i))
 
         # Tab "Thông tin" neo ở dưới đáy của sidebar:
@@ -384,7 +416,7 @@ class SettingsWindow:
         info_on = self.tab == info_idx
         info_bg = th["accent"] if info_on else (th["panel_hover"] if info_r.collidepoint(mouse) else th["panel"])
         draw_aa_round_rect(s, info_bg, info_r, 12)
-        draw_text(s, self.f_text, BOTTOM_TAB, WHITE if info_on else th["sub"], midleft=(info_r.left + 16, info_r.centery))
+        draw_text(s, self.f_text, BOTTOM_TAB, WHITE if info_on else th["sub"], midleft=(info_r.left + 16, info_r.centery - 1))
         self._hit(info_r, origin, lambda: self._switch_tab(info_idx))
 
         # Đường phân cách dọc giữa Sidebar và vùng Nội dung
@@ -393,23 +425,54 @@ class SettingsWindow:
 
         # Vùng nội dung tab bên phải
         pad = content_left
-        y0, step = 92, 70
+        y0, step = 92, 72
         if self.tab == 0:                                    # ---- Chung ----
             self._row(s, y0, "Vòng tròn bên trái", "Hiển thị % pin hoặc tiến độ bài nhạc", pad)
-            self._seg(s, origin, mouse, right - 76 * 3, y0 + 2, RING_CHOICES, st["ring_source"],
-                      lambda k: island.set_setting("ring_source", k), 76)
+            cur_src = st.get("ring_source", "battery")
+            if cur_src not in ("battery", "music"):
+                cur_src = "battery"
+            self._seg(s, origin, mouse, right - 64 * 2, y0 + 2, RING_CHOICES, cur_src,
+                      lambda k: island.set_setting("ring_source", k), 64, h=28)
 
-            self._row(s, y0 + step, "Hiện giây khi mở rộng", "Giờ dạng HH:MM:SS khi island mở ra", pad)
-            on = bool(st["show_seconds"])
-            self._switch(s, origin, mouse, right, y0 + step + 4, on, lambda v=on: island.set_setting("show_seconds", not v))
+            self._row(s, y0 + step, "Hiện giây", "Chọn hiển thị giây cho đồng hồ Dynamic Notch", pad)
+            sec_mode = st.get("seconds_mode")
+            if sec_mode is None:
+                sec_mode = "expand" if st.get("show_seconds", True) else "none"
+
+            mode_labels = dict(SECONDS_CHOICES)
+            cur_label = mode_labels.get(sec_mode, "Chế độ mở rộng")
+
+            # Dropdown menu nhỏ gọn hơn, không bị lấn sang dòng chữ mô tả
+            dd_w, dd_h = 152, 28
+            dd_rect = pygame.Rect(right - dd_w, y0 + step + 2, dd_w, dd_h)
+            dd_hover = dd_rect.collidepoint(mouse)
+            dd_bg = th["panel_hover"] if (dd_hover or self.dropdown_active) else th["panel"]
+            draw_aa_round_rect(s, dd_bg, dd_rect, 6)
+            draw_aa_round_rect(s, th["div"], dd_rect, 6, width=1)
+
+            # Vạch màu xanh điểm nhấn nhỏ bên trái khi đang chọn
+            draw_aa_round_rect(s, th["accent"], (dd_rect.left + 4, dd_rect.top + 5, 2.5, dd_h - 10), 1.5)
+            draw_text(s, self.f_small, cur_label, th["main"], midleft=(dd_rect.left + 12, dd_rect.centery - 1))
+
+            # Mũi tên nhỏ chỉ xuống
+            arr_y = dd_rect.centery - 2 if not self.dropdown_active else dd_rect.centery + 2
+            pygame.draw.lines(s, th["sub"], False, [
+                (dd_rect.right - 16, arr_y - 2),
+                (dd_rect.right - 12, arr_y + 2),
+                (dd_rect.right - 8, arr_y - 2)
+            ], 2)
+
+            def _toggle_dd():
+                self.dropdown_active = not self.dropdown_active
+            self._hit(dd_rect, origin, _toggle_dd)
 
             self._row(s, y0 + 2 * step, "Hiện chuông thông báo", "Chuông nằm cạnh giờ khi có thông báo mới", pad)
             on = bool(st["show_bell"])
-            self._switch(s, origin, mouse, right, y0 + 2 * step + 4, on, lambda v=on: island.set_setting("show_bell", not v))
+            self._switch(s, origin, mouse, right, y0 + 2 * step + 2, on, lambda v=on: island.set_setting("show_bell", not v))
 
             self._row(s, y0 + 3 * step, "Khởi động cùng Windows", "Tự động chạy Dynamic Notch khi mở máy", pad)
             on = bool(st.get("auto_startup", False))
-            self._switch(s, origin, mouse, right, y0 + 3 * step + 4, on, lambda v=on: island.set_setting("auto_startup", not v))
+            self._switch(s, origin, mouse, right, y0 + 3 * step + 2, on, lambda v=on: island.set_setting("auto_startup", not v))
         elif self.tab == 1:                                  # ---- Cá nhân hóa (được đưa lên) ----
             cur_color = tuple(st.get("bg_color", [4, 6, 10]))
             cur_op = int(st.get("bg_opacity", 100))
@@ -417,34 +480,35 @@ class SettingsWindow:
             # 1. Màu nền
             self._row(s, 86, "Màu nền", "Chọn màu sắc chủ đạo cho Dynamic Island và Cài đặt", pad)
 
+            # Nút Tùy chọn màu căn thẳng mép phải `right` (thẳng hàng nút tắt)
+            custom_btn_w = 110
+            custom_btn = pygame.Rect(right - custom_btn_w, 136, custom_btn_w, 32)
+            is_custom = all(list(c) != list(cur_color) for _, c in PRESET_COLORS)
+            btn_bg = th["panel_hover"] if custom_btn.collidepoint(mouse) else th["panel"]
+            draw_aa_round_rect(s, btn_bg, custom_btn, 16)
+            border_col = th["accent"] if is_custom else th["div"]
+            draw_aa_round_rect(s, border_col, custom_btn, 16, width=2 if is_custom else 1)
+            if is_custom:
+                draw_aa_circle(s, cur_color, (custom_btn.left + 16, custom_btn.centery), 7)
+                draw_text(s, self.f_small, "Tùy chọn", th["main"], midleft=(custom_btn.left + 28, custom_btn.centery - 1))
+            else:
+                draw_text(s, self.f_small, "+ Tùy chọn", th["main"], center=(custom_btn.centerx, custom_btn.centery - 1))
+            self._hit(custom_btn, origin, self._pick_custom_color)
+
             # Các nút màu mặc định (tươi sáng)
             cx = pad + 16
             for name, c in PRESET_COLORS:
-                cr = pygame.Rect(cx - 15, 138, 30, 30)
+                cr = pygame.Rect(cx - 15, 137, 30, 30)
                 is_selected = list(c) == list(cur_color)
-                draw_aa_circle(s, c, (cx, 153), 14)
-                draw_aa_circle(s, th["div"], (cx, 153), 14, width=1)
+                draw_aa_circle(s, c, (cx, 152), 14)
+                draw_aa_circle(s, th["div"], (cx, 152), 14, width=1)
                 if is_selected:
-                    draw_aa_circle(s, th["main"], (cx, 153), 17, width=2)
-                    draw_aa_circle(s, WHITE, (cx, 153), 4)
+                    draw_aa_circle(s, th["main"], (cx, 152), 17, width=2)
+                    draw_aa_circle(s, WHITE, (cx, 152), 4)
                 elif cr.collidepoint(mouse):
-                    draw_aa_circle(s, th["main"], (cx, 153), 16, width=1)
+                    draw_aa_circle(s, th["main"], (cx, 152), 16, width=1)
                 self._hit(cr, origin, lambda col=c: island.set_setting("bg_color", list(col)))
                 cx += 38
-
-            # Nút Tùy chọn màu
-            custom_btn = pygame.Rect(cx + 6, 136, 126, 34)
-            is_custom = all(list(c) != list(cur_color) for _, c in PRESET_COLORS)
-            btn_bg = th["panel_hover"] if custom_btn.collidepoint(mouse) else th["panel"]
-            draw_aa_round_rect(s, btn_bg, custom_btn, 17)
-            border_col = th["accent"] if is_custom else th["div"]
-            draw_aa_round_rect(s, border_col, custom_btn, 17, width=2 if is_custom else 1)
-            if is_custom:
-                draw_aa_circle(s, cur_color, (custom_btn.left + 18, custom_btn.centery), 7)
-                draw_text(s, self.f_small, "Tùy chọn", th["main"], midleft=(custom_btn.left + 30, custom_btn.centery))
-            else:
-                draw_text(s, self.f_small, "+ Tùy chọn", th["main"], center=custom_btn.center)
-            self._hit(custom_btn, origin, self._pick_custom_color)
 
             # Đường phân cách
             pygame.draw.line(s, th["div"], (pad, 186), (right, 186), 1)
@@ -452,25 +516,25 @@ class SettingsWindow:
             # 2. Độ trong suốt của nền
             self._row(s, 198, "Độ trong suốt nền", f"Mức độ trong suốt hiện tại: {cur_op}% (nội dung sắc nét 100%)", pad)
 
-            # Nhóm nút chọn nhanh độ trong suốt (100%, 85%, 70%, 50%)
+            # Nhóm nút chọn nhanh độ trong suốt (100%, 85%, 70%, 50%) căn thẳng mép phải `right` và nhích lên ngang với dòng chữ chính
             op_choices = ((100, "100%"), (85, "85%"), (70, "70%"), (50, "50%"))
             seg_w = 54
             seg_x = right - seg_w * 4
-            draw_aa_round_rect(s, th["panel"], (seg_x, 200, seg_w * 4, 28), 14)
+            draw_aa_round_rect(s, th["panel"], (seg_x, 196, seg_w * 4, 28), 14)
             for i, (val, lbl) in enumerate(op_choices):
-                sr = pygame.Rect(seg_x + i * seg_w, 200, seg_w, 28)
+                sr = pygame.Rect(seg_x + i * seg_w, 196, seg_w, 28)
                 on = val == cur_op
                 if on:
                     draw_aa_round_rect(s, th["accent"], sr.inflate(-4, -4), 12)
                 elif sr.collidepoint(mouse):
                     draw_aa_round_rect(s, th["panel_hover"], sr.inflate(-4, -4), 12)
-                draw_text(s, self.f_small, lbl, WHITE if on else th["sub"], center=sr.center)
+                draw_text(s, self.f_small, lbl, WHITE if on else th["sub"], center=(sr.centerx, sr.centery - 1))
                 self._hit(sr, origin, lambda v=val: island.set_setting("bg_opacity", v))
 
             # Thanh trượt liên tục (Slider) từ 20% đến 100%
             slider_w = right - pad
             slider_y = 254
-            slider_rect = pygame.Rect(pad, slider_y - 8, slider_w, 24)
+            slider_rect = pygame.Rect(pad - 12, slider_y - 12, slider_w + 24, 30)
             draw_aa_round_rect(s, th["div"], (pad, slider_y, slider_w, 6), 3)
             prog = max(0.0, min(1.0, (cur_op - 20) / 80))
             fill_w = int(slider_w * prog)
@@ -481,10 +545,11 @@ class SettingsWindow:
             draw_text(s, self.f_tiny, "20% (Trong suốt)", th["sub"], topleft=(pad, slider_y + 12))
             draw_text(s, self.f_tiny, "100% (Đục hoàn toàn)", th["sub"], topright=(right, slider_y + 12))
 
-            # Cho phép kéo / bấm thanh trượt trực tiếp
+            # Cho phép kéo / bấm thanh trượt trực tiếp (bao gồm cả điểm 100% ở mép phải)
             if mouse_down(1) and slider_rect.collidepoint(mouse):
-                rel_x = max(0, min(slider_w, mouse[0] - pad))
-                new_op = int(20 + (rel_x / slider_w) * 80)
+                rel_x = max(0.0, min(float(slider_w), float(mouse[0] - pad)))
+                new_op = int(round(20 + (rel_x / slider_w) * 80))
+                new_op = max(20, min(100, new_op))
                 if new_op != cur_op:
                     island.set_setting("bg_opacity", new_op)
             self._hit(slider_rect, origin, lambda: None)
@@ -526,7 +591,7 @@ class SettingsWindow:
             add_btn = pygame.Rect(right - 216, y_cal, 110, 26)
             add_hover = add_btn.collidepoint(mouse)
             draw_aa_round_rect(s, (30, 145, 255) if add_hover else th["accent"], add_btn, 13)
-            draw_text(s, self.f_small, "+ Link iCal", WHITE, center=add_btn.center)
+            draw_text(s, self.f_small, "+ Link iCal", WHITE, center=(add_btn.centerx, add_btn.centery - 1))
             def _open_input():
                 self.input_active = True
                 pygame.key.start_text_input()
@@ -536,7 +601,7 @@ class SettingsWindow:
             file_hover = file_btn.collidepoint(mouse)
             draw_aa_round_rect(s, th["panel_hover"] if file_hover else th["panel"], file_btn, 13)
             draw_aa_round_rect(s, th["div"], file_btn, 13, width=1)
-            draw_text(s, self.f_small, "+ File .ics", th["main"], center=file_btn.center)
+            draw_text(s, self.f_small, "+ File .ics", th["main"], center=(file_btn.centerx, file_btn.centery - 1))
             self._hit(file_btn, origin, self._pick_ics_file)
 
             # ---- Danh sách các Lịch đã thêm ----
@@ -628,9 +693,15 @@ class SettingsWindow:
 
                 if self.input_url:
                     display_url = self.input_url[-48:] if len(self.input_url) > 48 else self.input_url
-                    draw_text(s, self.f_small, display_url + "▍", WHITE, midleft=(inp.x + 10, inp.centery))
+                    t_surf = self.f_small.render(display_url, True, WHITE)
+                    t_rect = t_surf.get_rect(midleft=(inp.x + 10, inp.centery - 1))
+                    s.blit(t_surf, t_rect)
+                    # Vẽ con trỏ nhấp nháy (cursor) bằng vạch dọc sắc nét
+                    if int(time.monotonic() * 2) % 2 == 0:
+                        cur_x = min(inp.right - 8, t_rect.right + 2)
+                        pygame.draw.line(s, WHITE, (cur_x, inp.centery - 7), (cur_x, inp.centery + 7), 2)
                 else:
-                    draw_text(s, self.f_small, "Dán link hoặc bấm nút Dán bên cạnh...", DIM, midleft=(inp.x + 10, inp.centery))
+                    draw_text(s, self.f_small, "Dán link hoặc bấm nút Dán bên cạnh...", DIM, midleft=(inp.x + 10, inp.centery - 1))
 
                 cancel_r = pygame.Rect(box.right - 170, box.bottom - 42, 72, 28)
                 c_hover = cancel_r.collidepoint(mouse)
@@ -700,24 +771,61 @@ class SettingsWindow:
             if upd.status == "update_available":
                 # Chỉ hiện nút Tải & Cài đặt khi có phiên bản mới hơn trên GitHub
                 draw_aa_round_rect(s, (48, 209, 88) if chk_hover else (38, 180, 75), chk_btn, 17)
-                draw_text(s, self.f_small, f"Tải & Cài đặt V{upd.latest_version}", WHITE, center=chk_btn.center)
+                draw_text(s, self.f_small, f"Tải & Cài đặt V{upd.latest_version}", WHITE, center=(chk_btn.centerx, chk_btn.centery - 1))
                 self._hit(chk_btn, origin, upd.download_and_install)
             elif upd.status == "up_to_date":
                 # Phiên bản trên máy đã là mới nhất hoặc lớn hơn: nút bị vô hiệu hóa
                 draw_aa_round_rect(s, th["panel"], chk_btn, 17)
                 draw_aa_round_rect(s, th["div"], chk_btn, 17, width=1)
-                draw_text(s, self.f_small, "Đã cập nhật", th["dim"], center=chk_btn.center)
+                draw_text(s, self.f_small, "Đã cập nhật", th["dim"], center=(chk_btn.centerx, chk_btn.centery - 1))
                 # Không gắn self._hit để vô hiệu hóa click
             elif upd.status == "downloading":
                 draw_aa_round_rect(s, th["panel"], chk_btn, 17)
-                draw_text(s, self.f_small, f"Đang tải {upd.download_progress}%", th["accent"], center=chk_btn.center)
+                draw_text(s, self.f_small, f"Đang tải {upd.download_progress}%", th["accent"], center=(chk_btn.centerx, chk_btn.centery - 1))
             elif upd.status == "checking":
                 draw_aa_round_rect(s, th["panel"], chk_btn, 17)
-                draw_text(s, self.f_small, "Đang kiểm tra...", th["sub"], center=chk_btn.center)
+                draw_text(s, self.f_small, "Đang kiểm tra...", th["sub"], center=(chk_btn.centerx, chk_btn.centery - 1))
             else:
                 # Trạng thái ban đầu (idle) hoặc lỗi: cho phép bấm kiểm tra
                 draw_aa_round_rect(s, (30, 145, 255) if chk_hover else th["accent"], chk_btn, 17)
-                draw_text(s, self.f_small, "Kiểm tra cập nhật", WHITE, center=chk_btn.center)
+                draw_text(s, self.f_small, "Kiểm tra cập nhật", WHITE, center=(chk_btn.centerx, chk_btn.centery - 1))
                 self._hit(chk_btn, origin, lambda: upd.check_for_updates(auto_download=False))
+
+        # ---- Dropdown menu sổ xuống của Hiện giây (vẽ đè lên trên các thành phần khác) ----
+        if self.tab == 0 and self.dropdown_active:
+            sec_mode = st.get("seconds_mode")
+            if sec_mode is None:
+                sec_mode = "expand" if st.get("show_seconds", True) else "none"
+
+            dd_w = 152
+            item_h = 30
+            menu_x = right - dd_w
+            menu_y = y0 + step + 32
+            menu_h = item_h * len(SECONDS_CHOICES)
+            menu_rect = pygame.Rect(menu_x, menu_y, dd_w, menu_h)
+
+            # Đổ bóng nhẹ và nền menu
+            draw_aa_round_rect(s, (24, 24, 28) if not th["is_light"] else (245, 245, 250), menu_rect, 6)
+            draw_aa_round_rect(s, th["div"], menu_rect, 6, width=1)
+
+            for idx, (m_key, m_title) in enumerate(SECONDS_CHOICES):
+                it_r = pygame.Rect(menu_x + 2, menu_y + 2 + idx * item_h, dd_w - 4, item_h - 4)
+                it_hover = it_r.collidepoint(mouse)
+                it_on = m_key == sec_mode
+
+                if it_on:
+                    draw_aa_round_rect(s, th["panel_hover"], it_r, 4)
+                    # Vạch màu xanh bên trái mục đang chọn giống Windows 11 (ảnh 2)
+                    draw_aa_round_rect(s, th["accent"], (it_r.left + 3, it_r.top + 5, 3, it_r.height - 10), 1.5)
+                elif it_hover:
+                    draw_aa_round_rect(s, th["panel"], it_r, 4)
+
+                draw_text(s, self.f_small, m_title, WHITE if it_on else th["main"], midleft=(it_r.left + 14, it_r.centery - 1))
+
+                def _pick_mode(val=m_key):
+                    island.set_setting("seconds_mode", val)
+                    self.dropdown_active = False
+
+                self._hit(it_r, origin, _pick_mode)
 
         draw_text(s, self.f_tiny, "Thay đổi được lưu tự động", th["dim"], midbottom=(SET_W // 2, SET_H - 12))

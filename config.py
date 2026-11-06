@@ -66,8 +66,8 @@ BLOB_MAX = 46.0                              # độ dài tối đa của "đuô
 BLOB_FADE = 0.16                             # thời gian giọt nước thu nhỏ khi thả (giây)
 
 # --- Vòng tròn bên trái thanh thu nhỏ ---
-# "auto": hiện % pin nếu máy có pin, không có thì hiện tiến độ bài nhạc; "battery" / "music": ép dùng một nguồn
-RING_SOURCE = "auto"
+# "battery": hiện % pin; "music": hiện tiến độ bài nhạc
+RING_SOURCE = "battery"
 
 # --- Phiên bản ứng dụng & Cập nhật tự động ---
 APP_VERSION = "1.0.1"                        # Phiên bản hiện tại của app
@@ -78,7 +78,8 @@ SET_W, SET_H = 700, 460                      # kích thước cửa sổ cài đ
 SETTINGS_TITLE = "DynamicIslandSettings"     # tiêu đề cửa sổ (dùng để tìm HWND)
 DEFAULT_SETTINGS = {
     "ring_source": RING_SOURCE,              # vòng tròn bên trái: "auto" | "battery" | "music"
-    "show_seconds": True,                    # hiện giây khi island mở rộng
+    "seconds_mode": "expand",                # hiện giây: "both" (cả 2) | "compact" (thu gọn) | "expand" (mở rộng) | "none" (không hiển thị)
+    "show_seconds": True,                    # tương thích ngược
     "show_bell": True,                       # hiện chuông khi có thông báo
     "auto_startup": False,                   # khởi động cùng Windows
     "auto_update": True,                     # tự động kiểm tra và tải cập nhật mới từ GitHub
