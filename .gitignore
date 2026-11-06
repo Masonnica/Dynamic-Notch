@@ -1,0 +1,8 @@
+/build
+/build_installer.bat
+/dist
+/DynamicNotch.spec
+/HUONG_DAN_BUILD_SETUP.md
+/installer.iss
+/installer_output
+/__pycache__
