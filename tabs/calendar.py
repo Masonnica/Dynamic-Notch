@@ -378,21 +378,15 @@ class CalendarTab(BaseTab):
             draw_aa_round_rect(surf, th["bar"], (w - 7, sb_y, 3, sb_h), 1.5)
 
         # Đường kẻ phân cách
-        pygame.draw.line(surf, th["div"], (238, 266), (w - 10, 266), 1)
+        pygame.draw.line(surf, th["div"], (238, 263), (w - 10, 263), 1)
 
-        # Hàng nút dưới: Thêm link iCal | Thêm file .ics
-        half_w = (right_w - 8) // 2
-        add_link_btn = pygame.Rect(238, 270, half_w, 22)
-        al_bg = th["panel_hover"] if add_link_btn.collidepoint(island.mouse_local) else th["panel"]
-        draw_aa_round_rect(surf, al_bg, add_link_btn, 11)
-        draw_text(surf, island.f_tiny, "+ Link iCal", th["main"], center=add_link_btn.center)
-        island.add_hit(add_link_btn, self.prompt_ical_url)
-
-        add_file_btn = pygame.Rect(238 + half_w + 8, 270, right_w - half_w - 8, 22)
-        af_bg = th["panel_hover"] if add_file_btn.collidepoint(island.mouse_local) else th["panel"]
-        draw_aa_round_rect(surf, af_bg, add_file_btn, 11)
-        draw_text(surf, island.f_tiny, "+ File .ics", th["main"], center=add_file_btn.center)
-        island.add_hit(add_file_btn, self.pick_ics_file)
+        # Nút "Thêm lịch" (mở cửa sổ Cài đặt và chuyển thẳng vào tab Lịch)
+        # Nhích lên Y=267 (cách đáy thông thoáng hơn, không bị dính sát các chấm điều hướng)
+        add_cal_btn = pygame.Rect(238, 267, right_w, 22)
+        ac_bg = th["panel_hover"] if add_cal_btn.collidepoint(island.mouse_local) else th["panel"]
+        draw_aa_round_rect(surf, ac_bg, add_cal_btn, 11)
+        draw_text(surf, island.f_tiny, "+ Thêm lịch", th["main"], center=(add_cal_btn.centerx, add_cal_btn.centery - 1))
+        island.add_hit(add_cal_btn, lambda: island.open_settings(tab=2))
 
     # ----------------------------- Sự Kiện Cuộn Chuột -----------------------------
     def on_wheel(self, dy):

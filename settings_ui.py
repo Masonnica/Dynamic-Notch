@@ -115,7 +115,9 @@ class SettingsWindow:
             return False
         return self.win_rect().move(self.x, self.y).collidepoint(sx, sy)
 
-    def open(self, island_bottom):
+    def open(self, island_bottom, tab=None):
+        if tab is not None:
+            self._switch_tab(tab)
         if self.state in ("opening", "open"):
             return
         self.start_y = island_bottom

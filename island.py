@@ -390,10 +390,10 @@ class Island:
             "is_light": (lum >= 170)
         }
 
-    def open_settings(self):
+    def open_settings(self, tab=None):
         """Giọt nước tách ra từ đáy island, rơi xuống giữa màn hình rồi phóng to thành cửa sổ Cài đặt."""
         if self.settings_win:
-            self.settings_win.open(round(self.cur_h) + TOP_MARGIN)
+            self.settings_win.open(round(self.cur_h) + TOP_MARGIN, tab=tab)
 
     # ------------------------------- Ngăn xếp file -------------------------------
     def add_file(self, path):
