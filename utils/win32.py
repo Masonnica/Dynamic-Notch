@@ -91,14 +91,34 @@ class LayeredPresenter:
 
     def present(self, surf):
         """Chuyển đổi Surface SRCALPHA sang BGRA premultiplied và đẩy thẳng lên DWM qua UpdateLayeredWindow."""
-        import numpy as np
-        raw = pygame.image.tobytes(surf, "BGRA")
-        arr = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 4)).copy()
-        a = arr[:, :, 3].astype(np.float32) / 255.0
-        arr[:, :, 0] = (arr[:, :, 0] * a).astype(np.uint8)
-        arr[:, :, 1] = (arr[:, :, 1] * a).astype(np.uint8)
-        arr[:, :, 2] = (arr[:, :, 2] * a).astype(np.uint8)
-        ctypes.memmove(self.ppvBits, arr.ctypes.data, self.width * self.height * 4)
+        try:
+            # pygame-ce hỗ trợ tobytes("raw", ...) hoặc xuất trực tiếp buffer
+            # Nếu có numpy hoạt động chuẩn
+            import numpy as np
+            raw = pygame.image.tobytes(surf, "BGRA")
+            arr = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 4)).copy()
+            a = arr[:, :, 3].astype(np.float32) / 255.0
+            arr[:, :, 0] = (arr[:, :, 0] * a).astype(np.uint8)
+            arr[:, :, 1] = (arr[:, :, 1] * a).astype(np.uint8)
+            arr[:, :, 2] = (arr[:, :, 2] * a).astype(np.uint8)
+            ctypes.memmove(self.ppvBits, arr.ctypes.data, self.width * self.height * 4)
+        except Exception:
+            # Fallback thuần C-types / bytearray cực nhanh, KHÔNG phụ thuộc vào numpy
+            # Tránh 100% lỗi thiếu submodule numpy trên các máy khác
+            raw = bytearray(pygame.image.tobytes(surf, "BGRA"))
+            # Premultiply alpha qua ctypes uint32 hoặc mảng byte
+            n_pixels = self.width * self.height
+            for i in range(0, n_pixels * 4, 4):
+                a = raw[i + 3]
+                if a == 0:
+                    raw[i] = raw[i + 1] = raw[i + 2] = 0
+                elif a < 255:
+                    raw[i] = (raw[i] * a) // 255
+                    raw[i + 1] = (raw[i + 1] * a) // 255
+                    raw[i + 2] = (raw[i + 2] * a) // 255
+            c_buf = (ctypes.c_char * len(raw)).from_buffer(raw)
+            ctypes.memmove(self.ppvBits, c_buf, len(raw))
+
         user32.UpdateLayeredWindow(
             self.hwnd, self.hdc_screen, None, ctypes.byref(self.size),
             self.hdc_mem, ctypes.byref(self.pt_src), 0, ctypes.byref(self.blend), 2
