@@ -69,6 +69,10 @@ BLOB_FADE = 0.16                             # thời gian giọt nước thu nh
 # "auto": hiện % pin nếu máy có pin, không có thì hiện tiến độ bài nhạc; "battery" / "music": ép dùng một nguồn
 RING_SOURCE = "auto"
 
+# --- Phiên bản ứng dụng & Cập nhật tự động ---
+APP_VERSION = "1.0.1"                        # Phiên bản hiện tại của app
+GITHUB_REPO = "Masonnica/Dynamic-Notch"      # Kho GitHub chính thức
+
 # --- Cửa sổ Cài đặt ---
 SET_W, SET_H = 700, 460                      # kích thước cửa sổ cài đặt (chiều ngang tăng thêm 60px: 640 -> 700)
 SETTINGS_TITLE = "DynamicIslandSettings"     # tiêu đề cửa sổ (dùng để tìm HWND)
@@ -77,6 +81,7 @@ DEFAULT_SETTINGS = {
     "show_seconds": True,                    # hiện giây khi island mở rộng
     "show_bell": True,                       # hiện chuông khi có thông báo
     "auto_startup": False,                   # khởi động cùng Windows
+    "auto_update": True,                     # tự động kiểm tra và tải cập nhật mới từ GitHub
     "week_start": 0,                         # lịch: tuần bắt đầu từ 0 = Thứ Hai, 6 = Chủ Nhật
     "show_event_dots": True,                 # lịch: chấm màu báo có sự kiện dưới mỗi ngày
     "bg_color": [4, 6, 10],                  # màu nền island (RGB)

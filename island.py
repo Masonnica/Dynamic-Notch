@@ -27,6 +27,7 @@ from utils.drawing import (
     draw_aa_circle, draw_aa_round_rect
 )
 from bridges import MediaBridge, NotifBridge, GoogleCalendar, fetch_synced_lyrics
+from bridges.updater import UpdaterBridge
 from tabs import MusicTab, CalendarTab, ShelfTab
 
 
@@ -82,6 +83,9 @@ class Island:
         self.media.start()
         self.notif = NotifBridge()                           # đọc thông báo hệ thống ở luồng nền
         self.notif.start()
+        self.updater = UpdaterBridge(self)                   # tự động cập nhật từ GitHub Releases
+        if self.settings.get("auto_update", True):
+            self.updater.check_for_updates(auto_download=False)
         self.notif_count = 0                                 # số thông báo đang chờ trong Action Center
         self.shake_until = 0.0                               # chuông lắc tới thời điểm này (khi có thông báo mới)
         self.track_key = None                                # (tên bài, nghệ sĩ) hiện tại

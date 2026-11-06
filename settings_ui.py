@@ -11,7 +11,7 @@ import pygame
 
 from config import (
     KEY, BLACK, PANEL, PANEL_HOVER, ACCENT, WHITE, GREY, DIM, RED, CLOSE_RED, CLOSE_RED_HOVER, GEAR_BG,
-    OFFSCREEN_POS, TOP_MARGIN, SET_W, SET_H, SETTINGS_TITLE
+    OFFSCREEN_POS, TOP_MARGIN, SET_W, SET_H, SETTINGS_TITLE, APP_VERSION, GITHUB_REPO
 )
 from utils.win32 import setup_native_window, keep_on_top, move_window, dwm_flush, cursor_pos, mouse_down, get_clipboard_text, LayeredPresenter
 from utils.drawing import (
@@ -28,7 +28,10 @@ MARGIN = 48                                  # lề trong suốt quanh cửa s�
 
 T_SHRINK = 0.22                              # đóng: nội dung ẩn + cửa sổ co lại thành giọt
 T_RISE = 0.42                                # đóng: giọt bay lên, đè qua island rồi ra khỏi mép trên màn hình
-TABS = ("Chung", "Lịch", "Cá nhân hóa")
+# Thứ tự tabs: Chung, Cá nhân hóa (đưa lên), Lịch (đưa xuống), Thông tin (neo dưới cùng)
+TOP_TABS = ("Chung", "Cá nhân hóa", "Lịch")
+BOTTOM_TAB = "Thông tin"
+TABS = ("Chung", "Cá nhân hóa", "Lịch", "Thông tin")
 
 RING_CHOICES = (("auto", "Tự động"), ("battery", "Pin"), ("music", "Nhạc"))
 PRESET_COLORS = (
@@ -364,9 +367,9 @@ class SettingsWindow:
         s.blit(x_icon, x_icon.get_rect(center=qr.center))
         self._hit(qr.inflate(8, 8), origin, self.close)
 
-        # Thanh tab dọc (sidebar) bên trái
+        # Thanh tab dọc (sidebar) bên trái: 3 tab đầu ở trên, tab "Thông tin" neo ở đáy
         tab_y = 86
-        for i, name in enumerate(TABS):
+        for i, name in enumerate(TOP_TABS):
             r = pygame.Rect(pad_l, tab_y + i * 46, sidebar_w, 38)
             on = i == self.tab
             bg = th["accent"] if on else (th["panel_hover"] if r.collidepoint(mouse) else th["panel"])
@@ -374,9 +377,19 @@ class SettingsWindow:
             draw_text(s, self.f_text, name, WHITE if on else th["sub"], midleft=(r.left + 16, r.centery))
             self._hit(r, origin, lambda i=i: self._switch_tab(i))
 
+        # Tab "Thông tin" neo ở dưới đáy của sidebar:
+        # Khoảng cách tới cạnh đáy (SET_H - info_r.bottom) bằng chính xác khoảng cách tới cạnh trái (pad_l = 28px)
+        info_idx = 3
+        info_r = pygame.Rect(pad_l, SET_H - pad_l - 38, sidebar_w, 38)
+        info_on = self.tab == info_idx
+        info_bg = th["accent"] if info_on else (th["panel_hover"] if info_r.collidepoint(mouse) else th["panel"])
+        draw_aa_round_rect(s, info_bg, info_r, 12)
+        draw_text(s, self.f_text, BOTTOM_TAB, WHITE if info_on else th["sub"], midleft=(info_r.left + 16, info_r.centery))
+        self._hit(info_r, origin, lambda: self._switch_tab(info_idx))
+
         # Đường phân cách dọc giữa Sidebar và vùng Nội dung
         div_x = pad_l + sidebar_w + 12
-        pygame.draw.line(s, th["div"], (div_x, 86), (div_x, SET_H - 30), 1)
+        pygame.draw.line(s, th["div"], (div_x, 86), (div_x, SET_H - pad_l), 1)
 
         # Vùng nội dung tab bên phải
         pad = content_left
@@ -397,161 +410,7 @@ class SettingsWindow:
             self._row(s, y0 + 3 * step, "Khởi động cùng Windows", "Tự động chạy Dynamic Notch khi mở máy", pad)
             on = bool(st.get("auto_startup", False))
             self._switch(s, origin, mouse, right, y0 + 3 * step + 4, on, lambda v=on: island.set_setting("auto_startup", not v))
-        elif self.tab == 1:                                  # ---- Lịch ----
-            # Cài đặt hiển thị cơ bản
-            self._row(s, 86, "Tuần bắt đầu từ", "Thứ tự các cột trong lưới tháng", pad)
-            self._seg(s, origin, mouse, right - 96 * 2, 88, ((0, "Thứ Hai"), (6, "Chủ Nhật")), st["week_start"],
-                      lambda k: island.set_setting("week_start", k), 96)
-
-            self._row(s, 146, "Chấm báo sự kiện", "Chấm màu dưới mỗi ngày có sự kiện", pad)
-            on = bool(st["show_event_dots"])
-            self._switch(s, origin, mouse, right, 150, on, lambda v=on: island.set_setting("show_event_dots", not v))
-
-            # Đường phân cách phần Quản lý Lịch
-            pygame.draw.line(s, th["div"], (pad, 196), (right, 196), 1)
-
-            # ---- Header Quản lý Lịch Google Calendar ----
-            y_cal = 208
-            draw_text(s, self.f_text, "Lịch Google Calendar", th["main"], midleft=(pad, y_cal + 13))
-
-            gcal = island.gcal
-            cals = gcal.get_calendars() if gcal.state != "disconnected" else []
-
-            # 2 nút chức năng ở góc phải header
-            add_btn = pygame.Rect(right - 216, y_cal, 110, 26)
-            add_hover = add_btn.collidepoint(mouse)
-            draw_aa_round_rect(s, (30, 145, 255) if add_hover else th["accent"], add_btn, 13)
-            draw_text(s, self.f_small, "+ Link iCal", WHITE, center=add_btn.center)
-            def _open_input():
-                self.input_active = True
-                pygame.key.start_text_input()
-            self._hit(add_btn, origin, _open_input)
-
-            file_btn = pygame.Rect(right - 98, y_cal, 98, 26)
-            file_hover = file_btn.collidepoint(mouse)
-            draw_aa_round_rect(s, th["panel_hover"] if file_hover else th["panel"], file_btn, 13)
-            draw_aa_round_rect(s, th["div"], file_btn, 13, width=1)
-            draw_text(s, self.f_small, "+ File .ics", th["main"], center=file_btn.center)
-            self._hit(file_btn, origin, self._pick_ics_file)
-
-            # ---- Danh sách các Lịch đã thêm ----
-            y_list = 246
-            if not cals:
-                # Trạng thái rỗng: hộp thông báo hướng dẫn đẹp mắt
-                empty_box = pygame.Rect(pad, y_list, right - pad, 80)
-                draw_aa_round_rect(s, th["panel"], empty_box, 10)
-                draw_aa_round_rect(s, th["div"], empty_box, 10, width=1)
-                draw_text(s, self.f_small, "Chưa có lịch nào được kết nối", th["sub"],
-                          center=(empty_box.centerx, empty_box.y + 28))
-                draw_text(s, self.f_tiny, "Nhấn \"+ Link iCal\" để dán link bí mật hoặc \"+ File .ics\" để nhập file", th["dim"],
-                          center=(empty_box.centerx, empty_box.y + 52))
-            else:
-                # Danh sách card các lịch (tối đa 3 dòng hiển thị)
-                for i, cal in enumerate(cals[:3]):
-                    ry = y_list + i * 36
-                    row = pygame.Rect(pad, ry, right - pad, 32)
-                    row_hover = row.collidepoint(mouse)
-                    draw_aa_round_rect(s, th["panel_hover"] if row_hover else th["panel"], row, 8)
-
-                    # Chấm màu nhận diện lịch
-                    draw_aa_circle(s, cal["color"], (row.x + 14, row.centery), 5)
-
-                    # Badge nguồn: Link hoặc File
-                    is_url = cal["id"] in gcal.ical_urls
-                    tag_txt = "Link" if is_url else "File"
-                    tag_bg = (20, 48, 80) if is_url else th["panel_hover"]
-                    tag_col = (110, 180, 255) if is_url else th["sub"]
-                    tag_r = pygame.Rect(row.x + 26, row.centery - 9, 36, 18)
-                    draw_aa_round_rect(s, tag_bg, tag_r, 4)
-                    draw_text(s, self.f_tiny, tag_txt, tag_col, center=tag_r.center)
-
-                    # Tên lịch
-                    draw_text(s, self.f_small, fit_text(self.f_small, cal["name"], 280), th["main"],
-                              midleft=(row.x + 70, row.centery))
-
-                    # Nút Xóa riêng cho từng lịch nằm gọn ở góc phải của card
-                    del_r = pygame.Rect(row.right - 54, row.centery - 11, 46, 22)
-                    del_hover = del_r.collidepoint(mouse)
-                    del_bg = (70, 22, 24) if del_hover else (45, 18, 20)
-                    draw_aa_round_rect(s, del_bg, del_r, 11)
-                    draw_text(s, self.f_tiny, "Xóa", CLOSE_RED_HOVER if del_hover else CLOSE_RED, center=del_r.center)
-                    self._hit(del_r, origin, lambda cid=cal["id"]: island.gcal.remove_calendar(cid))
-
-                if len(cals) > 3:
-                    draw_text(s, self.f_tiny, f"... và còn {len(cals) - 3} lịch khác", th["dim"],
-                              topleft=(pad + 4, y_list + 3 * 36 + 4))
-
-            # ---- Trạng thái kết nối & Nút Xóa tất cả ----
-            y_stat = 378
-            st_conn = gcal.state
-            st_color = (48, 209, 88) if st_conn == "connected" else ((255, 159, 10) if st_conn == "connecting" else th["dim"])
-            st_txt = f"Đã kết nối • {len(cals)} lịch" if st_conn == "connected" else ("Đang kết nối..." if st_conn == "connecting" else "Chưa kết nối")
-            draw_aa_circle(s, st_color, (pad + 6, y_stat), 4)
-            draw_text(s, self.f_tiny, st_txt, th["sub"], midleft=(pad + 18, y_stat))
-
-            # Nút xóa tất cả nếu đã có lịch
-            if cals:
-                logout_r = pygame.Rect(0, 0, 84, 22)
-                logout_r.midright = (right, y_stat)
-                lb_hover = logout_r.collidepoint(mouse)
-                lb_bg = (60, 20, 22) if lb_hover else (38, 16, 18)
-                draw_aa_round_rect(s, lb_bg, logout_r, 11)
-                draw_text(s, self.f_tiny, "Xóa tất cả", CLOSE_RED_HOVER if lb_hover else CLOSE_RED, center=logout_r.center)
-                self._hit(logout_r, origin, island.gcal.disconnect)
-
-            # ---- Hộp thoại Overlay nhập link iCal ----
-            if self.input_active:
-                overlay = pygame.Surface((SET_W, SET_H), pygame.SRCALPHA)
-                overlay.fill((0, 0, 0, 190))
-                s.blit(overlay, (0, 0))
-
-                box = pygame.Rect(0, 0, min(590, SET_W - 80), 175)
-                box.center = (SET_W // 2, SET_H // 2)
-                draw_aa_round_rect(s, (24, 24, 28), box, 16)
-                draw_aa_round_rect(s, (60, 60, 68), box, 16, width=1)
-
-                draw_text(s, self.f_text, "Thêm Lịch Google (iCal)", WHITE, topleft=(box.x + 24, box.y + 18))
-                draw_text(s, self.f_tiny, "Google Calendar > Cài đặt lịch > Tích hợp lịch > Địa chỉ bí mật ở định dạng iCal", GREY,
-                          topleft=(box.x + 24, box.y + 44))
-
-                inp = pygame.Rect(box.x + 24, box.y + 70, box.width - 48 - 72, 32)
-                draw_aa_round_rect(s, (36, 36, 42), inp, 8)
-                draw_aa_round_rect(s, ACCENT, inp, 8, width=1)
-
-                paste_r = pygame.Rect(inp.right + 8, box.y + 70, 64, 32)
-                paste_hover = paste_r.collidepoint(mouse)
-                draw_aa_round_rect(s, PANEL_HOVER if paste_hover else PANEL, paste_r, 8)
-                draw_aa_round_rect(s, (60, 60, 68), paste_r, 8, width=1)
-                draw_text(s, self.f_small, "Dán", WHITE, center=paste_r.center)
-                def _do_paste():
-                    clip = get_clipboard_text().strip()
-                    if clip:
-                        self.input_url += clip
-                self._hit(paste_r, origin, _do_paste)
-
-                if self.input_url:
-                    display_url = self.input_url[-48:] if len(self.input_url) > 48 else self.input_url
-                    draw_text(s, self.f_small, display_url + "▍", WHITE, midleft=(inp.x + 10, inp.centery))
-                else:
-                    draw_text(s, self.f_small, "Dán link hoặc bấm nút Dán bên cạnh...", DIM, midleft=(inp.x + 10, inp.centery))
-
-                cancel_r = pygame.Rect(box.right - 170, box.bottom - 42, 72, 28)
-                c_hover = cancel_r.collidepoint(mouse)
-                draw_aa_round_rect(s, PANEL_HOVER if c_hover else PANEL, cancel_r, 14)
-                draw_text(s, self.f_small, "Hủy", GREY, center=cancel_r.center)
-                def _cancel():
-                    self.input_active = False
-                    self.input_url = ""
-                    pygame.key.stop_text_input()
-                self._hit(cancel_r, origin, _cancel)
-
-                ok_r = pygame.Rect(box.right - 88, box.bottom - 42, 68, 28)
-                ok_hover = ok_r.collidepoint(mouse)
-                draw_aa_round_rect(s, (30, 145, 255) if ok_hover else ACCENT, ok_r, 14)
-                draw_text(s, self.f_small, "Thêm", WHITE, center=ok_r.center)
-                self._hit(ok_r, origin, self._submit_ical_url)
-
-        elif self.tab == 2:                                  # ---- Cá nhân hóa ----
+        elif self.tab == 1:                                  # ---- Cá nhân hóa (được đưa lên) ----
             cur_color = tuple(st.get("bg_color", [4, 6, 10]))
             cur_op = int(st.get("bg_opacity", 100))
 
@@ -642,5 +501,223 @@ class SettingsWindow:
                 sbar.center = (preview_r.right - 28 + si * 4, preview_r.centery)
                 draw_aa_round_rect(s, th["main"], sbar, 1)
             draw_text(s, self.f_tiny, "Xem trước màu sắc tai thỏ", th["sub"], center=(preview_r.centerx, 360))
+
+        elif self.tab == 2:                                  # ---- Lịch (được đưa xuống) ----
+            # Cài đặt hiển thị cơ bản
+            self._row(s, 86, "Tuần bắt đầu từ", "Thứ tự các cột trong lưới tháng", pad)
+            self._seg(s, origin, mouse, right - 96 * 2, 88, ((0, "Thứ Hai"), (6, "Chủ Nhật")), st["week_start"],
+                      lambda k: island.set_setting("week_start", k), 96)
+
+            self._row(s, 146, "Chấm báo sự kiện", "Chấm màu dưới mỗi ngày có sự kiện", pad)
+            on = bool(st["show_event_dots"])
+            self._switch(s, origin, mouse, right, 150, on, lambda v=on: island.set_setting("show_event_dots", not v))
+
+            # Đường phân cách phần Quản lý Lịch
+            pygame.draw.line(s, th["div"], (pad, 196), (right, 196), 1)
+
+            # ---- Header Quản lý Lịch Google Calendar ----
+            y_cal = 208
+            draw_text(s, self.f_text, "Lịch Google Calendar", th["main"], midleft=(pad, y_cal + 13))
+
+            gcal = island.gcal
+            cals = gcal.get_calendars() if gcal.state != "disconnected" else []
+
+            # 2 nút chức năng ở góc phải header
+            add_btn = pygame.Rect(right - 216, y_cal, 110, 26)
+            add_hover = add_btn.collidepoint(mouse)
+            draw_aa_round_rect(s, (30, 145, 255) if add_hover else th["accent"], add_btn, 13)
+            draw_text(s, self.f_small, "+ Link iCal", WHITE, center=add_btn.center)
+            def _open_input():
+                self.input_active = True
+                pygame.key.start_text_input()
+            self._hit(add_btn, origin, _open_input)
+
+            file_btn = pygame.Rect(right - 98, y_cal, 98, 26)
+            file_hover = file_btn.collidepoint(mouse)
+            draw_aa_round_rect(s, th["panel_hover"] if file_hover else th["panel"], file_btn, 13)
+            draw_aa_round_rect(s, th["div"], file_btn, 13, width=1)
+            draw_text(s, self.f_small, "+ File .ics", th["main"], center=file_btn.center)
+            self._hit(file_btn, origin, self._pick_ics_file)
+
+            # ---- Danh sách các Lịch đã thêm ----
+            y_list = 246
+            if not cals:
+                empty_box = pygame.Rect(pad, y_list, right - pad, 80)
+                draw_aa_round_rect(s, th["panel"], empty_box, 10)
+                draw_aa_round_rect(s, th["div"], empty_box, 10, width=1)
+                draw_text(s, self.f_small, "Chưa có lịch nào được kết nối", th["sub"],
+                          center=(empty_box.centerx, empty_box.y + 28))
+                draw_text(s, self.f_tiny, "Nhấn \"+ Link iCal\" để dán link bí mật hoặc \"+ File .ics\" để nhập file", th["dim"],
+                          center=(empty_box.centerx, empty_box.y + 52))
+            else:
+                for i, cal in enumerate(cals[:3]):
+                    ry = y_list + i * 36
+                    row = pygame.Rect(pad, ry, right - pad, 32)
+                    row_hover = row.collidepoint(mouse)
+                    draw_aa_round_rect(s, th["panel_hover"] if row_hover else th["panel"], row, 8)
+
+                    draw_aa_circle(s, cal["color"], (row.x + 14, row.centery), 5)
+
+                    is_url = cal["id"] in gcal.ical_urls
+                    tag_txt = "Link" if is_url else "File"
+                    tag_bg = (20, 48, 80) if is_url else th["panel_hover"]
+                    tag_col = (110, 180, 255) if is_url else th["sub"]
+                    tag_r = pygame.Rect(row.x + 26, row.centery - 9, 36, 18)
+                    draw_aa_round_rect(s, tag_bg, tag_r, 4)
+                    draw_text(s, self.f_tiny, tag_txt, tag_col, center=tag_r.center)
+
+                    draw_text(s, self.f_small, fit_text(self.f_small, cal["name"], 280), th["main"],
+                              midleft=(row.x + 70, row.centery))
+
+                    del_r = pygame.Rect(row.right - 54, row.centery - 11, 46, 22)
+                    del_hover = del_r.collidepoint(mouse)
+                    del_bg = (70, 22, 24) if del_hover else (45, 18, 20)
+                    draw_aa_round_rect(s, del_bg, del_r, 11)
+                    draw_text(s, self.f_tiny, "Xóa", CLOSE_RED_HOVER if del_hover else CLOSE_RED, center=del_r.center)
+                    self._hit(del_r, origin, lambda cid=cal["id"]: island.gcal.remove_calendar(cid))
+
+                if len(cals) > 3:
+                    draw_text(s, self.f_tiny, f"... và còn {len(cals) - 3} lịch khác", th["dim"],
+                              topleft=(pad + 4, y_list + 3 * 36 + 4))
+
+            # ---- Trạng thái kết nối & Nút Xóa tất cả ----
+            y_stat = 378
+            st_conn = gcal.state
+            st_color = (48, 209, 88) if st_conn == "connected" else ((255, 159, 10) if st_conn == "connecting" else th["dim"])
+            st_txt = f"Đã kết nối • {len(cals)} lịch" if st_conn == "connected" else ("Đang kết nối..." if st_conn == "connecting" else "Chưa kết nối")
+            draw_aa_circle(s, st_color, (pad + 6, y_stat), 4)
+            draw_text(s, self.f_tiny, st_txt, th["sub"], midleft=(pad + 18, y_stat))
+
+            if cals:
+                logout_r = pygame.Rect(0, 0, 84, 22)
+                logout_r.midright = (right, y_stat)
+                lb_hover = logout_r.collidepoint(mouse)
+                lb_bg = (60, 20, 22) if lb_hover else (38, 16, 18)
+                draw_aa_round_rect(s, lb_bg, logout_r, 11)
+                draw_text(s, self.f_tiny, "Xóa tất cả", CLOSE_RED_HOVER if lb_hover else CLOSE_RED, center=logout_r.center)
+                self._hit(logout_r, origin, island.gcal.disconnect)
+
+            if self.input_active:
+                overlay = pygame.Surface((SET_W, SET_H), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 190))
+                s.blit(overlay, (0, 0))
+
+                box = pygame.Rect(0, 0, min(590, SET_W - 80), 175)
+                box.center = (SET_W // 2, SET_H // 2)
+                draw_aa_round_rect(s, (24, 24, 28), box, 16)
+                draw_aa_round_rect(s, (60, 60, 68), box, 16, width=1)
+
+                draw_text(s, self.f_text, "Thêm Lịch Google (iCal)", WHITE, topleft=(box.x + 24, box.y + 18))
+                draw_text(s, self.f_tiny, "Google Calendar > Cài đặt lịch > Tích hợp lịch > Địa chỉ bí mật ở định dạng iCal", GREY,
+                          topleft=(box.x + 24, box.y + 44))
+
+                inp = pygame.Rect(box.x + 24, box.y + 70, box.width - 48 - 72, 32)
+                draw_aa_round_rect(s, (36, 36, 42), inp, 8)
+                draw_aa_round_rect(s, ACCENT, inp, 8, width=1)
+
+                paste_r = pygame.Rect(inp.right + 8, box.y + 70, 64, 32)
+                paste_hover = paste_r.collidepoint(mouse)
+                draw_aa_round_rect(s, PANEL_HOVER if paste_hover else PANEL, paste_r, 8)
+                draw_aa_round_rect(s, (60, 60, 68), paste_r, 8, width=1)
+                draw_text(s, self.f_small, "Dán", WHITE, center=paste_r.center)
+                def _do_paste():
+                    clip = get_clipboard_text().strip()
+                    if clip:
+                        self.input_url += clip
+                self._hit(paste_r, origin, _do_paste)
+
+                if self.input_url:
+                    display_url = self.input_url[-48:] if len(self.input_url) > 48 else self.input_url
+                    draw_text(s, self.f_small, display_url + "▍", WHITE, midleft=(inp.x + 10, inp.centery))
+                else:
+                    draw_text(s, self.f_small, "Dán link hoặc bấm nút Dán bên cạnh...", DIM, midleft=(inp.x + 10, inp.centery))
+
+                cancel_r = pygame.Rect(box.right - 170, box.bottom - 42, 72, 28)
+                c_hover = cancel_r.collidepoint(mouse)
+                draw_aa_round_rect(s, PANEL_HOVER if c_hover else PANEL, cancel_r, 14)
+                draw_text(s, self.f_small, "Hủy", GREY, center=cancel_r.center)
+                def _cancel():
+                    self.input_active = False
+                    self.input_url = ""
+                    pygame.key.stop_text_input()
+                self._hit(cancel_r, origin, _cancel)
+
+                ok_r = pygame.Rect(box.right - 88, box.bottom - 42, 68, 28)
+                ok_hover = ok_r.collidepoint(mouse)
+                draw_aa_round_rect(s, (30, 145, 255) if ok_hover else ACCENT, ok_r, 14)
+                draw_text(s, self.f_small, "Thêm", WHITE, center=ok_r.center)
+                self._hit(ok_r, origin, self._submit_ical_url)
+
+        elif self.tab == 3:                                  # ---- Thông tin & Cập nhật ----
+            upd = island.updater
+            y_info = 86
+
+            # 1. Hộp hiển thị phiên bản hiện tại & thông tin app
+            info_box = pygame.Rect(pad, y_info, right - pad, 100)
+            draw_aa_round_rect(s, th["panel"], info_box, 14)
+            draw_aa_round_rect(s, th["div"], info_box, 14, width=1)
+
+            # Icon hoặc Logo nhỏ
+            logo_r = pygame.Rect(info_box.x + 18, info_box.centery - 24, 48, 48)
+            draw_aa_round_rect(s, th["accent"], logo_r, 14)
+            draw_text(s, self.f_title, "DN", WHITE, center=logo_r.center)
+
+            draw_text(s, self.f_title, "Dynamic Notch cho Windows", th["main"], topleft=(logo_r.right + 18, info_box.y + 18))
+            draw_text(s, self.f_small, f"Phiên bản hiện tại: V{APP_VERSION}", th["sub"], topleft=(logo_r.right + 18, info_box.y + 46))
+            draw_text(s, self.f_tiny, f"GitHub: {GITHUB_REPO}", th["dim"], topleft=(logo_r.right + 18, info_box.y + 68))
+
+            # 2. Tùy chọn Tự động cập nhật
+            y_opt = y_info + 120
+            self._row(s, y_opt, "Cập nhật tự động", "Tự động kiểm tra bản phát hành mới khi mở ứng dụng", pad)
+            on = bool(st.get("auto_update", True))
+            self._switch(s, origin, mouse, right, y_opt + 4, on, lambda v=on: island.set_setting("auto_update", not v))
+
+            # Đường kẻ phân cách
+            pygame.draw.line(s, th["div"], (pad, y_opt + 60), (right, y_opt + 60), 1)
+
+            # 3. Trạng thái cập nhật và Nút kiểm tra
+            y_check = y_opt + 76
+            draw_text(s, self.f_text, "Trạng thái cập nhật", th["main"], topleft=(pad, y_check))
+
+            status_msg = upd.message or "Phiên bản mới nhất đã được cài đặt"
+            msg_color = th["sub"]
+            if upd.status == "update_available":
+                msg_color = (48, 209, 88)  # Xanh lá
+            elif upd.status == "error":
+                msg_color = RED
+            elif upd.status in ("checking", "downloading"):
+                msg_color = th["accent"]
+            elif upd.status == "up_to_date":
+                msg_color = th["dim"]
+
+            draw_text(s, self.f_small, status_msg, msg_color, topleft=(pad, y_check + 26))
+
+            # Nút Kiểm tra cập nhật / Tải bản cập nhật
+            btn_w = 170
+            chk_btn = pygame.Rect(right - btn_w, y_check + 10, btn_w, 34)
+            chk_hover = chk_btn.collidepoint(mouse)
+
+            if upd.status == "update_available":
+                # Chỉ hiện nút Tải & Cài đặt khi có phiên bản mới hơn trên GitHub
+                draw_aa_round_rect(s, (48, 209, 88) if chk_hover else (38, 180, 75), chk_btn, 17)
+                draw_text(s, self.f_small, f"Tải & Cài đặt V{upd.latest_version}", WHITE, center=chk_btn.center)
+                self._hit(chk_btn, origin, upd.download_and_install)
+            elif upd.status == "up_to_date":
+                # Phiên bản trên máy đã là mới nhất hoặc lớn hơn: nút bị vô hiệu hóa
+                draw_aa_round_rect(s, th["panel"], chk_btn, 17)
+                draw_aa_round_rect(s, th["div"], chk_btn, 17, width=1)
+                draw_text(s, self.f_small, "Đã cập nhật", th["dim"], center=chk_btn.center)
+                # Không gắn self._hit để vô hiệu hóa click
+            elif upd.status == "downloading":
+                draw_aa_round_rect(s, th["panel"], chk_btn, 17)
+                draw_text(s, self.f_small, f"Đang tải {upd.download_progress}%", th["accent"], center=chk_btn.center)
+            elif upd.status == "checking":
+                draw_aa_round_rect(s, th["panel"], chk_btn, 17)
+                draw_text(s, self.f_small, "Đang kiểm tra...", th["sub"], center=chk_btn.center)
+            else:
+                # Trạng thái ban đầu (idle) hoặc lỗi: cho phép bấm kiểm tra
+                draw_aa_round_rect(s, (30, 145, 255) if chk_hover else th["accent"], chk_btn, 17)
+                draw_text(s, self.f_small, "Kiểm tra cập nhật", WHITE, center=chk_btn.center)
+                self._hit(chk_btn, origin, lambda: upd.check_for_updates(auto_download=False))
 
         draw_text(s, self.f_tiny, "Thay đổi được lưu tự động", th["dim"], midbottom=(SET_W // 2, SET_H - 12))
