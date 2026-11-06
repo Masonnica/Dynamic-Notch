@@ -121,11 +121,18 @@ class UpdaterBridge:
 
             with self._lock:
                 self.status = "ready"
-                self.message = "Đang chuẩn bị cài đặt..."
+                self.message = "Đang cài đặt ngầm..."
 
-            # Khởi chạy installer và đóng app hiện tại
-            # Tham số /SILENT hoặc /VERYSILENT có thể dùng nếu muốn cài âm thầm
-            subprocess.Popen([str(installer_path)])
+            # Khởi chạy installer ở chế độ /VERYSILENT (cài đặt ngầm hoàn toàn không cần người dùng thao tác)
+            # /SUPPRESSMSGBOXES: không bật popup thông báo
+            # /NORESTART: không khởi động lại Windows
+            # Installer sẽ tự động đóng app hiện tại, ghi đè file mới và khởi động lại app mới
+            subprocess.Popen([
+                str(installer_path),
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART"
+            ])
             self.island.quit = True
 
         except Exception as ex:
