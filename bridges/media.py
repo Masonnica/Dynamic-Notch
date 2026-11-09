@@ -87,6 +87,9 @@ class MediaBridge:
                             await s.try_skip_next_async()
                         elif cmd == "prev":
                             await s.try_skip_previous_async()
+                        elif isinstance(cmd, (tuple, list)) and len(cmd) >= 2 and cmd[0] == "seek":
+                            ticks = int(max(0.0, float(cmd[1])) * 10_000_000)
+                            await s.try_change_playback_position_async(ticks)
             except Exception:
                 pass
             finally:
@@ -94,18 +97,37 @@ class MediaBridge:
 
     async def _poll(self):
         MediaManager, PlayStatus = _winsdk()                 # nạp winsdk ngay trong luồng này
+        mgr = None
+        last_mgr_refresh = 0.0
+        cached_title = ""
+        cached_artist = ""
+        cached_app_id = ""
+
+        # Biến theo dõi để định kỳ kích hoạt GC dọn dẹp các wrapper C++/COM
+        poll_count = 0
+
         while True:
             info = {}
+            now = time.monotonic()
+            poll_count += 1
+            if poll_count % 120 == 0:  # Mỗi 60 giây (120 vòng * 0.5s) quét gom rác
+                import gc
+                gc.collect()
+
             try:
-                # Luôn lấy SessionManager mới để tránh bị cache phiên cũ hoặc mất kết nối
-                mgr = None
-                try:
-                    mgr = await MediaManager.request_async()
-                except Exception:
-                    pass
+                # 1. Quản lý vòng đời của SessionManager:
+                # Tái sử dụng manager thay vì gọi request_async() mỗi 0.5 giây (ngăn rò rỉ COM wrapper/native handles).
+                # Chỉ làm mới định kỳ sau mỗi 300 giây hoặc khi mất kết nối / gặp lỗi.
+                if mgr is None or (now - last_mgr_refresh > 300.0):
+                    try:
+                        mgr = await MediaManager.request_async()
+                        MediaBridge._mgr = mgr
+                        last_mgr_refresh = now
+                    except Exception:
+                        mgr = None
+                        MediaBridge._mgr = None
 
                 if mgr is not None:
-                    MediaBridge._mgr = mgr
                     s = None
                     try:
                         s = mgr.get_current_session()
@@ -131,7 +153,6 @@ class MediaBridge:
 
                     # 2. Nếu s không có hoặc không phát, tìm trong tất cả sessions xem có phiên nào PLAYING
                     if sessions:
-                        # Kiểm tra xem session hiện tại có đang PLAYING không
                         curr_playing = False
                         if target_session is not None:
                             try:
@@ -155,12 +176,6 @@ class MediaBridge:
 
                     if target_session:
                         s = target_session
-                        props = None
-                        try:
-                            props = await s.try_get_media_properties_async()
-                        except Exception:
-                            props = None
-
                         p_info = None
                         try:
                             p_info = s.get_playback_info()
@@ -185,17 +200,27 @@ class MediaBridge:
                         except Exception:
                             pass
 
+                        # 2. Tối ưu hóa việc gọi try_get_media_properties_async():
+                        # Lấy app_id kiểm tra trước; chỉ gọi try_get_media_properties_async khi cần
+                        app_id = ""
+                        try:
+                            app_id = s.source_app_user_model_id or ""
+                        except Exception:
+                            app_id = ""
+
+                        # Lấy metadata bài hát
+                        props = None
+                        try:
+                            props = await s.try_get_media_properties_async()
+                        except Exception:
+                            props = None
+
                         title = (props.title or "").strip() if props else ""
                         artist = (props.artist or "").strip() if props else ""
 
-                        # Nếu không có title từ props, thử fallback lấy từ SourceAppUserModelId nếu có
-                        if not title:
-                            try:
-                                app_id = s.source_app_user_model_id
-                                if app_id:
-                                    title = app_id.split("!")[-1].replace(".exe", "").capitalize()
-                            except Exception:
-                                pass
+                        # Fallback tên ứng dụng nếu không có title
+                        if not title and app_id:
+                            title = app_id.split("!")[-1].replace(".exe", "").capitalize()
 
                         # Ghi nhận thông tin bài hát
                         if title or artist or playing:
@@ -212,8 +237,16 @@ class MediaBridge:
                                     "playing": playing, "pos": pos, "dur": dur,
                                     "t": time.monotonic(),
                                     "thumb": self._thumb}
+                        # Giải phóng biến cục bộ để COM wrapper không bị giữ lại
+                        del props
+                        del p_info
+                        del s
+                        del target_session
+                    if sessions:
+                        del sessions
             except Exception:
                 info = {}
+                mgr = None
                 MediaBridge._mgr = None
             with self._lock:
                 self._info = info
@@ -227,26 +260,44 @@ class MediaBridge:
 
 
 async def _read_thumbnail(ref):
-    """Đọc ảnh bìa (SMTC thumbnail) thành bytes. Chỉ gọi từ luồng nền của MediaBridge."""
+    """Đọc ảnh bìa (SMTC thumbnail) thành bytes và giải phóng toàn bộ stream/reader WinRT."""
     if ref is None:
         return None
+    stream = None
+    reader = None
     try:
         from winsdk.system import Array
         from winsdk.windows.storage.streams import DataReader
         stream = await ref.open_read_async()
+        if not stream:
+            return None
         size = int(stream.size)
         if size <= 0 or size > 6_000_000:
             return None
-        reader = DataReader(stream.get_input_stream_at(0))
+        input_stream = stream.get_input_stream_at(0)
+        reader = DataReader(input_stream)
         loaded = int(await reader.load_async(size))
         if loaded <= 0:
             return None
         raw = Array("B", loaded)                             # mảng byte WinRT
         reader.read_bytes(raw)
-        reader.close()
-        return bytes(bytearray(raw))
+        result = bytes(bytearray(raw))
+        return result
     except Exception:
         return None
+    finally:
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
+            del reader
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+            del stream
 
 
 # --------------------------------- Lyrics -----------------------------------
@@ -270,19 +321,80 @@ def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def fetch_youtube_manual_subtitles(title, artist=""):
+    """Tìm phụ đề thủ công do tác giả tải lên (không lấy phụ đề tự động) trên YouTube."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        ytt = YouTubeTranscriptApi()
+        search_query = f"{title} {artist}".strip()
+        if not search_query:
+            return [], []
+
+        r = requests.get(
+            "https://www.youtube.com/results",
+            params={"search_query": search_query},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=6
+        )
+        if not r.ok:
+            return [], []
+
+        # Trích xuất video IDs từ kết quả tìm kiếm
+        vids = re.findall(r"/watch\?v=([a-zA-Z0-9_-]{11})", r.text)
+        seen = set()
+        unique_vids = []
+        for v in vids:
+            if v not in seen:
+                seen.add(v)
+                unique_vids.append(v)
+
+        for vid in unique_vids[:3]:
+            try:
+                transcript_list = ytt.list(vid)
+                for t in transcript_list:
+                    # Chỉ lấy phụ đề thủ công do tác giả tạo, không lấy phụ đề tự động (is_generated == False)
+                    if not t.is_generated:
+                        snippets = t.fetch()
+                        times = []
+                        lines = []
+                        for s in snippets:
+                            t_sec = float(s.start)
+                            # Thay dòng xuống dòng bằng khoảng trắng
+                            text_line = (s.text or "").replace("\n", " ").strip()
+                            if text_line:
+                                times.append(t_sec)
+                                lines.append(text_line)
+                        if lines:
+                            return times, lines
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return [], []
+
+
 def fetch_synced_lyrics(title, artist):
-    """Hỏi LRCLIB lời đồng bộ: thử /get trước, không có thì /search."""
-    title, artist = clean(title), clean(artist)
+    """Lấy lời đồng bộ: thử LRCLIB trước; nếu không có (như video/nhạc YouTube), thử phụ đề thủ công YouTube."""
+    raw_title, raw_artist = title, artist
+    c_title, c_artist = clean(title), clean(artist)
+    
+    # 1. Thử lấy từ LRCLIB
     try:
         r = requests.get("https://lrclib.net/api/get",
-                         params={"track_name": title, "artist_name": artist}, timeout=8)
+                         params={"track_name": c_title, "artist_name": c_artist}, timeout=8)
         if r.ok and r.json().get("syncedLyrics"):
             return parse_lrc(r.json()["syncedLyrics"])
-        r = requests.get("https://lrclib.net/api/search", params={"q": f"{title} {artist}"}, timeout=8)
+        r = requests.get("https://lrclib.net/api/search", params={"q": f"{c_title} {c_artist}"}, timeout=8)
         if r.ok:
             for item in r.json():
                 if item.get("syncedLyrics"):
                     return parse_lrc(item["syncedLyrics"])
     except Exception:
         pass
+
+    # 2. Nếu LRCLIB không có (thường xảy ra với video YouTube), tìm phụ đề do tác giả làm trên YouTube
+    yt_times, yt_lines = fetch_youtube_manual_subtitles(raw_title, raw_artist)
+    if yt_lines:
+        return yt_times, yt_lines
+
     return [], []

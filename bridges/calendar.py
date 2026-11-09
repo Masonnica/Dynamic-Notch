@@ -213,9 +213,11 @@ class GoogleCalendar:
             pass
 
     def get_enabled_calendar_ids(self):
-        """Lấy tập hợp các ID lịch đang được kích hoạt hiển thị."""
-        if self.enabled_cals is None:
-            self.get_calendars()
+        """Lấy tập hợp các ID lịch đang được kích hoạt hiển thị. Mặc định kích hoạt tất cả nếu chưa có hoặc bị rỗng."""
+        if not self.enabled_cals:
+            cals = self.get_calendars()
+            self.enabled_cals = {c["id"] for c in cals}
+            self._save_prefs()
         return set(self.enabled_cals or set())
 
     def toggle_calendar(self, cal_id):
@@ -420,7 +422,12 @@ class GoogleCalendar:
         if not enabled_only:
             return items
         enabled = self.get_enabled_calendar_ids()
-        return [it for it in items if it["cal_id"] in enabled]
+        filtered = [it for it in items if it["cal_id"] in enabled]
+        # Nếu filtered rỗng do lỗi prefs nhưng items có sự kiện, tự động kích hoạt tất cả và trả về items
+        if not filtered and items:
+            self.set_all_calendars(True)
+            return items
+        return filtered
 
     def get_event_colors_on(self, d):
         """Lấy danh sách màu sắc của các sự kiện trong ngày (tối đa 3 màu) để vẽ chấm trạng thái trên lưới lịch."""

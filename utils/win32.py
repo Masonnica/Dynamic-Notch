@@ -189,16 +189,63 @@ def cursor_pos():
     return pt.x, pt.y
 
 
+# ---- Cache trạng thái chuột toàn cục: đọc 1 lần/frame rồi dùng lại ----
+_mouse_state_cache = {}   # {button: state_int} được reset mỗi frame bởi poll_mouse()
+_mouse_clicked_events = []  # danh sách các sự kiện click [(button, (x, y), window)]
+_mouse_polled = False
+
+
+def register_mouse_click(button, pos=None, window=None):
+    """Ghi nhận một sự kiện click từ pygame hoặc event hook hệ thống kèm vị trí và cửa sổ."""
+    global _mouse_clicked_events
+    _mouse_clicked_events.append((button, pos, window))
+
+
+def poll_mouse():
+    """Đọc trạng thái chuột một lần duy nhất mỗi frame và cache kết quả.
+    Phải được gọi từ main.py TRƯỚC khi island.update() và settings.update()
+    để cả hai dùng chung cùng một snapshot — tránh mất click nhanh của remote desktop."""
+    global _mouse_state_cache, _mouse_polled
+    swapped = bool(user32.GetSystemMetrics(23))              # SM_SWAPBUTTON
+    # logical button 1 = trái, 3 = phải; vật lý VK_LBUTTON=0x01, VK_RBUTTON=0x02
+    vk1 = 0x01 if not swapped else 0x02  # vật lý tương ứng với nút trái logic
+    vk3 = 0x02 if not swapped else 0x01  # vật lý tương ứng với nút phải logic
+    _mouse_state_cache[1] = user32.GetAsyncKeyState(vk1)
+    _mouse_state_cache[3] = user32.GetAsyncKeyState(vk3)
+    _mouse_polled = True
+
+
+def consume_clicks():
+    """Lấy danh sách các sự kiện click trong frame hiện tại và xóa danh sách."""
+    global _mouse_clicked_events
+    if not _mouse_clicked_events:
+        return []
+    evs = list(_mouse_clicked_events)
+    _mouse_clicked_events.clear()
+    return evs
+
+
 def mouse_down(button):
-    """Nút chuột có đang được giữ ở bất kỳ đâu không. button: 1 = trái, 3 = phải (theo nghĩa logic, có tính cả đổi tay)."""
-    swapped = bool(user32.GetSystemMetrics(23))              # SM_SWAPBUTTON: người dùng đã đổi nút trái/phải?
-    vk = 0x01 if (button == 1) != swapped else 0x02          # VK_LBUTTON = 1, VK_RBUTTON = 2
-    return bool(user32.GetAsyncKeyState(vk) & 0x8000)        # bit cao = đang được nhấn
+    """Nút chuột có đang được giữ ở bất kỳ đâu không (kể cả click nhanh qua remote desktop).
+    button: 1 = trái, 3 = phải (theo nghĩa logic, có tính cả đổi tay).
+
+    GetAsyncKeyState trả về:
+      bit 0x8000 = đang giữ tại thời điểm gọi
+      bit 0x0001 = đã được nhấn kể từ lần gọi trước (tự xóa sau khi đọc)
+    Khi poll_mouse() đã được gọi trước, dùng cache để không miss click nhanh của remote desktop.
+    """
+    if _mouse_polled and button in _mouse_state_cache:
+        state = _mouse_state_cache[button]
+    else:
+        swapped = bool(user32.GetSystemMetrics(23))          # SM_SWAPBUTTON: người dùng đã đổi nút trái/phải?
+        vk = 0x01 if (button == 1) != swapped else 0x02      # VK_LBUTTON = 1, VK_RBUTTON = 2
+        state = user32.GetAsyncKeyState(vk)
+    return bool(state & 0x8001)                              # bit 0x8000: đang giữ | bit 0x0001: đã nhấn từ lần poll trước
 
 
 def key_down(vk_code):
-    """Kiểm tra một phím ảo bất kỳ có đang được nhấn trên toàn hệ điều hành hay không (0x8000 = đang nhấn)."""
-    return bool(user32.GetAsyncKeyState(vk_code) & 0x8000)
+    """Kiểm tra một phím ảo bất kỳ có đang được nhấn trên toàn hệ điều hành hay không."""
+    return bool(user32.GetAsyncKeyState(vk_code) & 0x8000)  # chỉ cần bit 'đang giữ' cho phím keyboard
 
 
 # ------------------------- Icon file của hệ thống ---------------------------
@@ -297,7 +344,7 @@ user32.TranslateMessage.argtypes = [ctypes.POINTER(MSG)]
 user32.DispatchMessageW.argtypes = [ctypes.POINTER(MSG)]
 
 
-def render_blob_frame(big, tx, ty, px, py, grow):
+def render_blob_frame(big, tx, ty, px, py, grow, blob_color=(0, 0, 0, 255)):
     """Vẽ 1 khung hình giọt nước. (tx,ty) = đầu bám theo chuột, (px,py) = đuôi chạy trễ, grow = 0..1 (co giãn).
     Trả về (bytes BGRA, x, y góc trên-trái của cửa sổ giọt nước trên màn hình)."""
     d = math.hypot(tx - px, ty - py)
@@ -307,17 +354,34 @@ def render_blob_frame(big, tx, ty, px, py, grow):
     wx, wy = int((tx + px) / 2 - BLOB_S / 2), int((ty + py) / 2 - BLOB_S / 2)   # cửa sổ nằm giữa đầu và đuôi
     big.fill((0, 0, 0, 0))                                   # xoá khung hình cũ (trong suốt hoàn toàn)
     draw_capsule(big, ((tx - wx) * BLOB_SS, (ty - wy) * BLOB_SS), r1 * BLOB_SS,
-                 ((px - wx) * BLOB_SS, (py - wy) * BLOB_SS), r2 * BLOB_SS, (0, 0, 0, 255))
+                 ((px - wx) * BLOB_SS, (py - wy) * BLOB_SS), r2 * BLOB_SS, blob_color)
     small = pygame.transform.smoothscale(big, (BLOB_S, BLOB_S))      # thu nhỏ => mép mượt
-    # Màu đen nên không cần nhân trước alpha (premultiplied) như UpdateLayeredWindow yêu cầu
-    return pygame.image.tobytes(small, "BGRA"), wx, wy
+    # Windows UpdateLayeredWindow yêu cầu Premultiplied Alpha đối với định dạng 32-bit BGRA.
+    # Khi vẽ màu đen (0,0,0) thì premultiplied = 0 nên không lộ khung. Nhưng khi màu có R,G,B > 0,
+    # nếu không nhân trước alpha, phần trong suốt quanh viền chống răng cưa (alpha < 255) sẽ bị Windows
+    # cộng dồn màu gây ra vệt/khung hình vuông bao quanh giọt nước.
+    try:
+        premult = small.premul_alpha()
+        return pygame.image.tobytes(premult, "BGRA"), wx, wy
+    except Exception:
+        raw = bytearray(pygame.image.tobytes(small, "BGRA"))
+        for i in range(0, len(raw), 4):
+            a = raw[i + 3]
+            if a == 0:
+                raw[i] = raw[i + 1] = raw[i + 2] = 0
+            elif a < 255:
+                raw[i] = (raw[i] * a) // 255
+                raw[i + 1] = (raw[i + 1] * a) // 255
+                raw[i + 2] = (raw[i + 2] * a) // 255
+        return bytes(raw), wx, wy
 
 
 class DragBlob:
-    """Cửa sổ giọt nước đen: đầu bám con trỏ, đuôi chạy theo trễ như chất lỏng bị kéo."""
+    """Cửa sổ giọt nước: đầu bám con trỏ, đuôi chạy theo trễ như chất lỏng bị kéo."""
 
-    def __init__(self, origin):
+    def __init__(self, origin, blob_color=(45, 48, 56, 255)):
         self.origin = origin                                 # chỗ nhấn chuột lúc bắt đầu kéo (giọt nước "tách ra" từ đây)
+        self.blob_color = blob_color                         # màu giọt nước tương phản theo màu nền
         self.stop_flag = threading.Event()                   # bật lên khi thả chuột
         self.thread = None
 
@@ -376,7 +440,7 @@ class DragBlob:
                 grow = min(1.0, (now - t0) / 0.12)           # phồng lên trong 0.12s đầu như giọt nước vừa tách ra
                 if closing_at is not None:
                     grow *= max(0.0, 1 - (now - closing_at) / BLOB_FADE)   # thu nhỏ dần khi thả
-                data, wx, wy = render_blob_frame(big, tx, ty, px, py, grow)
+                data, wx, wy = render_blob_frame(big, tx, ty, px, py, grow, self.blob_color)
                 ctypes.memmove(bits.value, data, S * S * 4)  # chép pixel vào bitmap của cửa sổ
                 pt.x, pt.y = wx, wy
                 user32.UpdateLayeredWindow(hwnd, hdc_screen, ctypes.byref(pt), ctypes.byref(size),
@@ -462,7 +526,7 @@ def _com_release(obj):
     ctypes.WINFUNCTYPE(ctypes.c_ulong, VOID)(fn)(obj)
 
 
-def _do_drag(path, origin):
+def _do_drag(path, origin, blob_color=None):
     """Bắt đầu kéo-thả file ra ngoài. Trả về False nếu luồng này không khởi tạo được OLE."""
     hr = ole32.OleInitialize(None)                           # DoDragDrop yêu cầu OLE (STA) đã khởi tạo
     if hr not in (0, 1):                                     # 0 = S_OK, 1 = S_FALSE (đã khởi tạo rồi)
@@ -484,7 +548,7 @@ def _do_drag(path, origin):
             if shell32.SHCreateDataObject(parent, 1, items, None, ctypes.byref(iid), ctypes.byref(data_obj)) == 0 \
                     and data_obj.value:
                 effect = wintypes.DWORD(0)
-                blob = DragBlob(origin)                      # giọt nước đen đi theo chuột trong lúc kéo
+                blob = DragBlob(origin, blob_color=blob_color or (50, 50, 58, 255))  # giọt nước đi theo chuột trong lúc kéo
                 blob.start()
                 try:
                     # 1 = COPY, 4 = LINK. Không cho MOVE để file gốc không bao giờ bị di chuyển/mất
@@ -500,10 +564,10 @@ def _do_drag(path, origin):
         ole32.OleUninitialize()                              # cân bằng với OleInitialize
 
 
-def start_file_drag(path, origin):
+def start_file_drag(path, origin, blob_color=None):
     """Kéo file ra ngoài. Hàm chặn tới khi thả chuột; nếu luồng chính không dùng được OLE thì thử luồng riêng."""
-    if not _do_drag(path, origin):
-        threading.Thread(target=_do_drag, args=(path, origin), daemon=True).start()
+    if not _do_drag(path, origin, blob_color=blob_color):
+        threading.Thread(target=_do_drag, args=(path, origin, blob_color), daemon=True).start()
 
 
 class _SYSTEM_POWER_STATUS(ctypes.Structure):

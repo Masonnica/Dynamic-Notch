@@ -9,7 +9,7 @@ import ctypes
 import pygame
 
 from config import TITLE, WIN_W, WIN_H, TOP_MARGIN, KEY, OFFSCREEN_POS
-from utils.win32 import setup_native_window, keep_on_top, move_window, dwm_flush
+from utils.win32 import setup_native_window, keep_on_top, move_window, dwm_flush, poll_mouse, register_mouse_click, cursor_pos
 from island import Island
 from settings_ui import SettingsWindow
 
@@ -64,7 +64,15 @@ def main():
             if e.type == pygame.WINDOWCLOSE and getattr(e, "window", None) is settings.window:
                 settings.close()                             # đóng cửa sổ Cài đặt (vd. Alt+F4) không được tắt cả island
             elif e.type in (pygame.QUIT, pygame.WINDOWCLOSE):
-                island.quit = True
+                island.trigger_quit()
+            elif e.type == pygame.MOUSEBUTTONDOWN:
+                register_mouse_click(e.button, getattr(e, "pos", None), getattr(e, "window", None))
+                # Phân phối trực tiếp sự kiện click cho Settings hoặc Island
+                ev_win = getattr(e, "window", None)
+                if ev_win is settings.window or (settings.visible and settings.covers(*cursor_pos())):
+                    settings.handle_click_event(e.button, getattr(e, "pos", None))
+                else:
+                    island.handle_click_event(e.button, getattr(e, "pos", None))
             elif e.type == pygame.MOUSEWHEEL:
                 island.wheel(e.y)
             elif e.type == pygame.DROPFILE:                  # file được thả vào cửa sổ
@@ -73,11 +81,14 @@ def main():
                 settings.handle_event(e)
 
         if time.monotonic() >= next_top:                     # mỗi 0.5 giây tự giành lại vị trí trên cùng
-            keep_on_top(hwnd)
-            if settings.visible or settings.state == "closing":
-                keep_on_top(settings.hwnd)                   # cửa sổ Cài đặt / giọt nước luôn nằm trên island (không bị island giành lại)
+            # Nếu đang mở hộp thoại chọn file của hệ thống thì không cưỡng chế z-order tránh che mất dialog
+            if not getattr(settings, "modal_dialog_active", False):
+                keep_on_top(hwnd)
+                if settings.visible or settings.state == "closing":
+                    keep_on_top(settings.hwnd)               # cửa sổ Cài đặt / giọt nước luôn nằm trên island (không bị island giành lại)
             next_top = time.monotonic() + 0.5
 
+        poll_mouse()                                         # đọc trạng thái chuột 1 lần duy nhất/frame, cache lại để island và settings dùng chung (tránh miss click nhanh của remote desktop)
         island.update()                                      # cập nhật trạng thái, hover, kéo file, animation
         island.draw(window.get_surface())                    # vẽ lên surface của Window
         window.flip()                                        # đẩy surface lên màn hình

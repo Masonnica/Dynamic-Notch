@@ -15,7 +15,7 @@ import pygame
 
 from config import (
     COMPACT_W, COMPACT_H, EXPAND_W, EXPAND_H, WIN_W, WIN_H, EAR, NAV_H, NAV_EXTRA, CONTENT_DY,
-    PAGE_SIZES, KEY, BLACK, PANEL, PANEL_HOVER, ACCENT, WHITE, GREY, DIM, BADGE_RED, TOP_MARGIN,
+    PAGE_SIZES, MUSIC_COMPACT_W, MUSIC_COMPACT_H, KEY, BLACK, PANEL, PANEL_HOVER, ACCENT, WHITE, GREY, DIM, BADGE_RED, TOP_MARGIN,
     GREEN, ORANGE, CLOSE_RED, CLOSE_RED_HOVER, GEAR_DOT, GEAR_BG, GEAR_BG_HOVER,
     SETTINGS_FILE, DEFAULT_SETTINGS, SHELF_FILE
 )
@@ -23,8 +23,8 @@ from utils.win32 import (
     cursor_pos, mouse_down, key_down, icon_cache_key, get_system_icon, start_file_drag, battery_status, LayeredPresenter
 )
 from utils.drawing import (
-    draw_text, make_bell, make_ring, make_nav_icon, intro_geometry, lerp,
-    draw_aa_circle, draw_aa_round_rect
+    draw_text, make_bell, make_ring, make_nav_icon, intro_geometry, outro_geometry, lerp,
+    draw_aa_circle, draw_aa_round_rect, draw_capsule, draw_fluid_pill
 )
 from bridges import MediaBridge, NotifBridge, GoogleCalendar, fetch_synced_lyrics
 from bridges.updater import UpdaterBridge
@@ -55,10 +55,16 @@ class Island:
         self.animating = False
         self.page = 0                                        # 0: nhạc, 1: lịch, 2: ngăn xếp
         self._prev_page = 0                                  # theo dõi khi đổi tab
+        self.nav_cur_x = None                                # toạ độ x của indicator giọt nước đang trôi
+        self.nav_tail_x = None                               # toạ độ x của đuôi giọt nước
         self.open_until = 0.0                                # island giữ mở tới thời điểm này
         self.hover = False
         self.mouse_local = (-999, -999)                      # chuột trong toạ độ vùng nội dung (đã trừ EAR)
         self.quit = False
+        self.closing = False                                 # True khi đang chạy animation đóng ứng dụng
+        self.outro_t0 = 0.0                                  # mốc thời gian bắt đầu outro
+        self.outro_start_w = 0.0
+        self.outro_start_h = 0.0
         # Hiệu ứng mở đầu: "pending" (chưa hiện, toàn trong suốt) -> "running" (giọt nước lan ra) -> "done"
         self.intro_state = "pending" if intro else "done"
         self.intro_t0 = 0.0                                  # thời điểm bắt đầu hiệu ứng mở đầu
@@ -129,6 +135,20 @@ class Island:
         r.midtop = (EXPAND_W // 2, 0)                        # căn giữa, sát đỉnh
         return r
 
+    def handle_click_event(self, button, pos=None):
+        """Xử lý sự kiện click chuột trực tiếp từ event queue."""
+        cx, cy = cursor_pos()
+        over_settings = bool(self.settings_win and self.settings_win.covers(cx, cy))
+        if over_settings:
+            return
+        local_pos = (cx - self.win_x - EAR, cy - self.win_y)
+        self.prev_l = True
+        self.click(local_pos, button)
+
+    def nav_extra(self):
+        """Chiều cao kéo dài thêm khi mở rộng thanh điều hướng (đồng bộ cho tất cả các tab)."""
+        return NAV_EXTRA
+
     def update(self):
         now = time.monotonic()
 
@@ -139,9 +159,12 @@ class Island:
             if key != self.track_key:                        # đổi bài -> tải lyrics mới
                 self.track_key = key
                 self.lyrics, self.lyr_state = ([], []), "loading"
+                self._last_seek_time = 0.0
                 threading.Thread(target=self._fetch_lyrics, args=(key,), daemon=True).start()
             self.title, self.artist = info["title"], info["artist"]
-            self.base_pos, self.base_t = info["pos"], info["t"]
+            if now - getattr(self, "_last_seek_time", 0.0) > 1.2:
+                # Chỉ cập nhật pos từ Windows khi đã qua 1.2s kể từ lần tua gần nhất (tránh Windows gửi vị trí cũ làm giật lùi thanh trượt)
+                self.base_pos, self.base_t = info["pos"], info["t"]
             self.playing, self.duration = info["playing"], info["dur"]
             self._apply_art(info.get("thumb"))
         else:
@@ -218,11 +241,15 @@ class Island:
                 path = self.files[idx]
                 self.drag = None
                 self.open_until = now + 1.0                  # giữ island mở trong lúc kéo
-                start_file_drag(path, (sx, sy))              # chặn tới khi thả chuột (vòng lặp kéo-thả của Windows)
+                blob_color = self.get_blob_color()
+                start_file_drag(path, (sx, sy), blob_color=blob_color)  # chặn tới khi thả chuột (vòng lặp kéo-thả của Windows)
                 self.prev_l, self.prev_r = mouse_down(1), mouse_down(3)   # bỏ qua cạnh nhấn "ảo" sau vòng kéo-thả
                 self.open_until = time.monotonic() + 0.3
 
         # --- animation kích thước ---
+        if self.closing:
+            self._step_outro(time.monotonic())
+            return
         if self.intro_state == "running":
             self._step_intro(time.monotonic())               # hiệu ứng mở đầu thay cho animation co giãn thông thường
             return
@@ -231,15 +258,16 @@ class Island:
         want_open = time.monotonic() < self.open_until
         mx, my = self.mouse_local                            # rê vào dải điều hướng (đáy island) -> chấm thành icon, island kéo dài
         rect = self.island_rect()
-        rest = self.cur_h - NAV_EXTRA * self.nav_t           # chiều cao thân, chưa cộng phần thanh điều hướng kéo dài
+        extra_h = self.nav_extra()
+        rest = self.cur_h - extra_h * self.nav_t             # chiều cao thân, chưa cộng phần thanh điều hướng kéo dài
         in_nav = (want_open and self.cur_h > COMPACT_H + 60 and rect.left <= mx <= rect.right
                   and rest - NAV_H <= my <= self.cur_h)
         nav_target = 1.0 if in_nav else 0.0
         self.nav_t += (nav_target - self.nav_t) * 0.28
         if abs(nav_target - self.nav_t) < 0.01:
             self.nav_t = nav_target
-        bw, bh = PAGE_SIZES[self.page] if want_open else (COMPACT_W, COMPACT_H)
-        tw, th = bw, bh + NAV_EXTRA * self.nav_t
+        bw, bh = self.page_size(self.page) if want_open else (COMPACT_W, COMPACT_H)
+        tw, th = bw, bh + extra_h * self.nav_t
         self.cur_w += (tw - self.cur_w) * 0.22               # mỗi khung tiến 22% tới đích (ease-out)
         self.cur_h += (th - self.cur_h) * 0.22
         self.animating = abs(tw - self.cur_w) > 0.5 or abs(th - self.cur_h) > 0.5 or self.nav_t != nav_target
@@ -263,6 +291,29 @@ class Island:
             return
         self.cur_w, self.cur_h, self.ear_scale, self.content_alpha = g
         self.animating = True                                # giữ 60 FPS trong lúc chạy hiệu ứng
+
+    def trigger_quit(self):
+        """Bắt đầu hiệu ứng thu nhỏ giọt nước ngược về mép trên trước khi tắt app."""
+        if self.closing:
+            return
+        # Đóng cửa sổ cài đặt ngay lập tức trước khi chạy animation của Dynamic Notch
+        if self.settings_win:
+            self.settings_win.close_immediate()
+        self.closing = True
+        self.outro_t0 = time.monotonic()
+        self.outro_start_w = float(self.cur_w)
+        self.outro_start_h = float(self.cur_h)
+        self.animating = True
+
+    def _step_outro(self, now):
+        """Một bước của hiệu ứng đóng: co thân thành giọt nước rồi rút vào mép trên màn hình."""
+        g = outro_geometry(now - self.outro_t0, self.outro_start_w, self.outro_start_h)
+        if g is None:
+            self.cur_w, self.cur_h, self.ear_scale, self.content_alpha = 0.0, 0.0, 0.0, 0.0
+            self.quit = True
+            return
+        self.cur_w, self.cur_h, self.ear_scale, self.content_alpha = g
+        self.animating = True
 
     def _apply_art(self, data):
         """Giải mã ảnh bìa trên luồng chính. data là bytes (cùng object cho tới khi đổi bài) hoặc None."""
@@ -345,12 +396,16 @@ class Island:
         def blend(c1, c2, f):
             return tuple(round(c1[i] * (1 - f) + c2[i] * f) for i in range(3))
 
-        if lum >= 170:
-            c_main = (18, 18, 22)
-            c_sub = blend(bg, (0, 0, 0), 0.72)
-            c_dim = blend(bg, (0, 0, 0), 0.50)
-            c_panel = blend(bg, (0, 0, 0), 0.12)
-            c_panel_hover = blend(bg, (0, 0, 0), 0.22)
+        # Phân loại độ sáng:
+        # lum >= 135 được coi là nền sáng (Light Theme) để chữ và nút tự động tối đi, tương phản rõ rệt
+        is_light = lum >= 135
+
+        if is_light:
+            c_main = (18, 18, 22)                         # Chữ chính & icon chính đen đậm rõ nét
+            c_sub = blend(bg, (0, 0, 0), 0.72)            # Chữ phụ tối vừa phải, dễ đọc
+            c_dim = blend(bg, (0, 0, 0), 0.50)            # Chữ mờ / divider
+            c_panel = blend(bg, (0, 0, 0), 0.12)          # Nền nút / panel
+            c_panel_hover = blend(bg, (0, 0, 0), 0.22)    # Hover nút
             c_div = blend(bg, (0, 0, 0), 0.16)
             c_bar = blend(bg, (0, 0, 0), 0.20)
             c_lyric_active = (10, 10, 15)
@@ -387,7 +442,7 @@ class Island:
             "lyric_active": c_lyric_active,
             "accent": c_accent,
             "bg": bg,
-            "is_light": (lum >= 170)
+            "is_light": is_light
         }
 
     def open_settings(self, tab=None):
@@ -455,6 +510,22 @@ class Island:
         if 0 <= self.page < len(self.tabs):
             self.tabs[self.page].on_wheel(dy)
 
+    def get_blob_color(self):
+        """Tính màu giọt nước tương phản hài hòa theo màu nền với độ chênh lệch vừa phải nhẹ nhàng."""
+        bg = tuple(self.settings.get("bg_color", [4, 6, 10]))
+        lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]
+        if lum >= 128:
+            # Nền sáng -> giọt nước hơi đậm nhẹ (giảm ~15% độ sáng)
+            r = max(0, min(255, round(bg[0] * 0.85)))
+            g = max(0, min(255, round(bg[1] * 0.85)))
+            b = max(0, min(255, round(bg[2] * 0.85)))
+        else:
+            # Nền tối -> giọt nước hơi sáng nhẹ (blend ~14% về trắng, nhạt hơn và tự nhiên)
+            r = max(0, min(255, round(bg[0] * 0.86 + 255 * 0.14)))
+            g = max(0, min(255, round(bg[1] * 0.86 + 255 * 0.14)))
+            b = max(0, min(255, round(bg[2] * 0.86 + 255 * 0.14)))
+        return (r, g, b, 255)
+
     def _save_shelf(self):
         try:
             SHELF_FILE.write_text(json.dumps(self.files), encoding="utf-8")
@@ -518,8 +589,8 @@ class Island:
 
         rect = self.island_rect()
         shape = rect.move(EAR, 0)                            # dời sang toạ độ cửa sổ (chừa chỗ cho tai trái)
-        r = int(min(shape.height / 2, 28))                   # bán kính bo 2 góc DƯỚI
-        er = max(1, round(EAR * self.ear_scale))             # bán kính tai hiện tại (lớn dần trong hiệu ứng mở đầu)
+        r = int(min(shape.height / 2, shape.width / 2, 28))  # bán kính bo 2 góc DƯỚI không vượt quá nửa bề rộng thân
+        er = max(0, round(EAR * self.ear_scale))             # bán kính tai hiện tại (lớn dần trong hiệu ứng mở đầu)
 
         bg_c = tuple(self.settings.get("bg_color", [4, 6, 10]))
         bg_op = int(self.settings.get("bg_opacity", 100))
@@ -527,26 +598,27 @@ class Island:
 
         if self.presenter:
             bg_rgba = (*bg_c, bg_alpha)
-            # Hai "tai" cong ở góc trên với độ khử răng cưa mượt mà
-            ear_key = (er, bg_rgba)
-            ear = self._ear_cache.get(ear_key)
-            if ear is None:
-                k = 3
-                big_ear = pygame.Surface((er * k, er * k), pygame.SRCALPHA)
-                big_ear.fill(bg_rgba)
-                mask = pygame.Surface((er * k, er * k), pygame.SRCALPHA)
-                mask.fill((255, 255, 255, 255))
-                pygame.draw.circle(mask, (0, 0, 0, 0), (0, er * k), er * k)
-                big_ear.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-                ear = pygame.transform.smoothscale(big_ear, (er, er))
-                self._ear_cache[ear_key] = ear
-            target.blit(ear, (shape.left - er, 0))
+            # Hai "tai" cong ở góc trên với độ khử răng cưa mượt mà (chỉ vẽ khi er > 0)
+            if er > 0:
+                ear_key = (er, bg_rgba)
+                ear = self._ear_cache.get(ear_key)
+                if ear is None:
+                    k = 3
+                    big_ear = pygame.Surface((er * k, er * k), pygame.SRCALPHA)
+                    big_ear.fill(bg_rgba)
+                    mask = pygame.Surface((er * k, er * k), pygame.SRCALPHA)
+                    mask.fill((255, 255, 255, 255))
+                    pygame.draw.circle(mask, (0, 0, 0, 0), (0, er * k), er * k)
+                    big_ear.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                    ear = pygame.transform.smoothscale(big_ear, (er, er))
+                    self._ear_cache[ear_key] = ear
+                target.blit(ear, (shape.left - er, 0))
 
-            ear_r = pygame.transform.flip(ear, True, False)
-            target.blit(ear_r, (shape.right, 0))
+                ear_r = pygame.transform.flip(ear, True, False)
+                target.blit(ear_r, (shape.right, 0))
 
             # Thân island: phần thẳng vẽ trước, 2 góc dưới bo tròn khử răng cưa siêu mượt
-            if r > 0 and shape.height > r:
+            if r > 0 and shape.height > r and shape.width >= 2 * r:
                 pygame.draw.rect(target, bg_rgba, (shape.left, 0, shape.width, shape.height - r))
                 pygame.draw.rect(target, bg_rgba, (shape.left + r, shape.height - r, shape.width - 2 * r, r))
                 corner_key = (r, bg_rgba)
@@ -599,6 +671,27 @@ class Island:
             self.draw_content(body)
             self.draw_nav(body, rect)
         body.set_clip(None)
+
+        # Xoá góc bo nhọn ngoài viền bo tròn r ở đáy để nội dung/gradient không bao giờ bị lem ra ngoài góc
+        if r > 0 and shape.height > r and shape.width >= 2 * r:
+            k = 3
+            corner_clear_key = (r,)
+            corner_mask = self._corner_cache.get(corner_clear_key)
+            if corner_mask is None:
+                big_m = pygame.Surface((r * k, r * k), pygame.SRCALPHA)
+                big_m.fill((255, 255, 255, 255))
+                pygame.draw.circle(big_m, (0, 0, 0, 0), (r * k, 0), r * k)
+                corner_mask = pygame.transform.smoothscale(big_m, (r, r))
+                self._corner_cache[corner_clear_key] = corner_mask
+            if self.presenter:
+                # Trừ alpha của phần ngoài vòng tròn ở 2 góc dưới
+                target.blit(corner_mask, (shape.left, shape.height - r), special_flags=pygame.BLEND_RGBA_SUB)
+                corner_mask_r = pygame.transform.flip(corner_mask, True, False)
+                target.blit(corner_mask_r, (shape.right - r, shape.height - r), special_flags=pygame.BLEND_RGBA_SUB)
+            else:
+                target.blit(corner_mask, (shape.left, shape.height - r))
+                corner_mask_r = pygame.transform.flip(corner_mask, True, False)
+                target.blit(corner_mask_r, (shape.right - r, shape.height - r))
 
         if self.presenter:
             self.presenter.present(self._render_surf)
@@ -667,17 +760,40 @@ class Island:
             draw_aa_round_rect(surf, BADGE_RED, box, box.height // 2)
             surf.blit(label, label.get_rect(center=box.center))
 
+    def page_size(self, idx):
+        """Kích thước thân island tương ứng với tab. Riêng tab Nhạc tự điều chỉnh theo tuỳ chọn bật/tắt lyrics."""
+        if idx == 0:
+            if not self.settings.get("show_lyrics", True):
+                return (MUSIC_COMPACT_W, MUSIC_COMPACT_H)
+        if 0 <= idx < len(PAGE_SIZES):
+            return PAGE_SIZES[idx]
+        return PAGE_SIZES[0]
+
+    def seek_to(self, sec):
+        """Tua bài hát đến vị trí sec (giây), cập nhật ngay lập tức UI và gửi lệnh SMTC nền."""
+        if self.duration > 0:
+            sec = max(0.0, min(float(sec), float(self.duration)))
+        else:
+            sec = max(0.0, float(sec))
+        self.base_pos = sec
+        self.base_t = time.monotonic()
+        self._last_seek_time = time.monotonic()
+        MediaBridge.command(("seek", sec))
+
     def draw_content(self, body):
         """Vẽ tab đang chọn lên lớp riêng rồi dán lên island, dịch lên CONTENT_DY px (không còn thanh tab ở trên).
         Lớp nền BLACK + colorkey BLACK nên chỉ phần tab vẽ mới đè lên island (không phá góc bo / phần trong suốt)."""
         if not (0 <= self.page < len(self.tabs)):
             return
-        pw, ph = PAGE_SIZES[self.page]                       # mỗi tab vẽ trên bề mặt đúng cỡ của tab đó
+        # Sử dụng bề rộng hiện tại self.cur_w đang co giãn mượt mà của Island!
+        # Điều này đảm bảo khi tab morph từ 480 <-> 680, toàn bộ nội dung luôn căn đúng tâm island hiện tại!
+        pw = round(self.cur_w)
+        ph = round(EXPAND_H + NAV_EXTRA - CONTENT_DY)
         if self._content is None or self._content.get_size() != (pw, ph):
             self._content = pygame.Surface((pw, ph), pygame.SRCALPHA)
         layer = self._content
         layer.fill((0, 0, 0, 0))
-        ox = (EXPAND_W - pw) // 2                            # tab hẹp hơn vùng cửa sổ thì căn giữa island
+        ox = (EXPAND_W - pw) // 2                            # căn giữa theo thân island đang animate
         real_mouse = self.mouse_local
         self.mouse_local = (real_mouse[0] - ox, real_mouse[1] - CONTENT_DY)   # tab nghĩ rằng nó vẫn nằm ở toạ độ gốc
         self._hit_ox, self._hit_dy = ox, CONTENT_DY          # vùng bấm của tab dời theo
@@ -701,7 +817,8 @@ class Island:
         Nút cài đặt (trái) và nút tắt (đỏ, phải) căn chỉnh đối xứng thẳng với điểm kết thúc góc bo."""
         nt = self.nav_t
         cx = rect.centerx
-        rest = self.cur_h - NAV_EXTRA * nt                   # đáy thân tab (chưa kéo dài), bám theo kích thước đang animate
+        extra_h = self.nav_extra()
+        rest = self.cur_h - extra_h * nt                     # đáy thân tab (chưa kéo dài), bám theo kích thước đang animate
         top = rest - NAV_H                                   # đỉnh dải điều hướng
 
         # Khi thu nhỏ: cy_collapsed cách đáy 15px (nằm trong đoạn thẳng trước góc bo r=28)
@@ -709,32 +826,69 @@ class Island:
         cy_collapsed = rest - 27
         cy_expanded = self.cur_h - 27
         cy = lerp(cy_collapsed, cy_expanded, nt)
-        hit_cy = (cy_collapsed + cy_expanded) / 2
+        hit_cy = cy
 
         spacing = lerp(16, 44, nt)
         radius = lerp(4.0, 18.0, nt)                         # thu nhỏ: 4px, phóng to: 18px theo yêu cầu
         th = self.theme()
 
+        # Cập nhật vị trí giọt nước đang trôi giữa các tab điều hướng
+        target_x = cx + (self.page - 1) * spacing
+        if self.nav_cur_x is None:
+            self.nav_cur_x = self.nav_tail_x = target_x
+        else:
+            # Đầu giọt nước tiến nhanh tới đích
+            self.nav_cur_x += (target_x - self.nav_cur_x) * 0.35
+            # Đuôi giọt nước chạy theo trễ hơn tạo độ co giãn chất lỏng
+            self.nav_tail_x += (self.nav_cur_x - self.nav_tail_x) * 0.22
+
+        # Vẽ nền các nút điều hướng không active trước
         for i, (kind, label) in enumerate(self.NAV_ITEMS):
             x = cx + (i - 1) * spacing
             active = i == self.page
-            hit = pygame.Rect(0, 0, 44, NAV_H + NAV_EXTRA)
+            hit = pygame.Rect(0, 0, 44, max(NAV_H + extra_h, 44))
             hit.center = (x, hit_cy)
-            hovered = hit.collidepoint(self.mouse_local) and nt > 0.5
-            dot_c = th["main"] if active else th["dim"]
-            btn_c = th["accent"] if active else (th["panel_hover"] if hovered else th["panel"])
+            hovered = hit.collidepoint(self.mouse_local) and nt > 0.3
+            dot_c = th["dim"]
+            btn_c = th["panel_hover"] if hovered else th["panel"]
             col = tuple(round(lerp(a, b, nt)) for a, b in zip(dot_c, btn_c))
-            if nt < 0.35 and active:                         # chấm đang chọn kéo dài thành viên thuốc cho dễ thấy
-                pill = pygame.Rect(0, 0, 14, 6)
-                pill.center = (x, cy)
-                draw_aa_round_rect(surf, col, pill, 3.0)
-            else:
+            if not active:
                 draw_aa_circle(surf, col, (x, cy), radius)
-            if nt > 0.45:                                    # icon hiện dần khi vòng tròn đã đủ lớn
-                icon = self.nav_icon(kind, WHITE if active else th["sub"], size=22).copy()
-                icon.set_alpha(int(255 * min(1.0, (nt - 0.45) / 0.55)))
-                surf.blit(icon, icon.get_rect(center=(round(x), round(cy))))
-            self.add_hit(hit, lambda i=i: setattr(self, "page", i))
+                if nt > 0.45:
+                    icon = self.nav_icon(kind, th["sub"], size=22).copy()
+                    icon.set_alpha(int(255 * min(1.0, (nt - 0.45) / 0.55)))
+                    surf.blit(icon, icon.get_rect(center=(round(x), round(cy))))
+            # Chỉ nhận sự kiện click khi thanh điều hướng đã mở rộng (nt >= 0.6)
+            if nt >= 0.6:
+                self.add_hit(hit, lambda i=i: setattr(self, "page", i))
+
+        # Vẽ giọt nước chất lỏng (indicator) đang di chuyển/co giãn ở tab active
+        active_dot_c = th["main"]
+        active_btn_c = th["accent"]
+        active_col = tuple(round(lerp(a, b, nt)) for a, b in zip(active_dot_c, active_btn_c))
+
+        if nt < 0.35:
+            # Chế độ thu nhỏ (chấm tròn): giọt nước biến thành viên thuốc trôi dẻo quẹo giữa 2 chấm
+            pill_w = max(14.0, abs(self.nav_cur_x - self.nav_tail_x) + 14.0)
+            pill_cx = (self.nav_cur_x + self.nav_tail_x) / 2
+            pill = pygame.Rect(0, 0, round(pill_w), 6)
+            pill.center = (round(pill_cx), round(cy))
+            draw_aa_round_rect(surf, active_col, pill, 3.0)
+        else:
+            # Chế độ phóng to (vòng tròn icon): giọt nước chất lỏng co giãn giữa đầu và đuôi
+            c1 = (self.nav_cur_x, cy)
+            c2 = (self.nav_tail_x, cy)
+            draw_capsule(surf, c1, radius, c2, radius, active_col)
+            draw_aa_circle(surf, active_col, (round(self.nav_cur_x), round(cy)), radius)
+            draw_aa_circle(surf, active_col, (round(self.nav_tail_x), round(cy)), radius)
+
+            # Vẽ icon của tab active đè lên trên giọt nước
+            for i, (kind, label) in enumerate(self.NAV_ITEMS):
+                if i == self.page and nt > 0.45:
+                    x = cx + (i - 1) * spacing
+                    icon = self.nav_icon(kind, WHITE, size=22).copy()
+                    icon.set_alpha(int(255 * min(1.0, (nt - 0.45) / 0.55)))
+                    surf.blit(icon, icon.get_rect(center=(round(x), round(cy))))
 
         # Hai nút tròn ở hai đầu hàng: Cài đặt (trái) và Tắt (đỏ, phải).
         # Căn đúng vị trí tiếp tuyến kết thúc góc bo (tiếp giáp đường thẳng đứng bên hông):
@@ -747,13 +901,13 @@ class Island:
         self._nav_button(surf, (rect.left + side_margin, cy), nt, "gear", gear_dot, gear_bg, gear_hover,
                          self.open_settings, hit_cy)
         self._nav_button(surf, (rect.right - side_margin, cy), nt, "close", CLOSE_RED, CLOSE_RED, CLOSE_RED_HOVER,
-                         lambda: setattr(self, "quit", True), hit_cy)
+                         self.trigger_quit, hit_cy)
 
     def _nav_button(self, surf, center, nt, kind, dot_c, btn_c, hover_c, fn, hit_cy):
         cx, cy = round(center[0]), round(center[1])
-        hit = pygame.Rect(0, 0, 44, NAV_H + NAV_EXTRA)
+        hit = pygame.Rect(0, 0, 44, max(NAV_H + NAV_EXTRA, 44))
         hit.center = (cx, hit_cy)
-        hovered = hit.collidepoint(self.mouse_local) and nt > 0.5
+        hovered = hit.collidepoint(self.mouse_local) and nt > 0.3
         col = tuple(round(lerp(a, b, nt)) for a, b in zip(dot_c, hover_c if hovered else btn_c))
         draw_aa_circle(surf, col, (cx, cy), lerp(4.0, 18.0, nt))  # thu nhỏ: 4px, phóng to: 18px
         if nt > 0.45:                                        # icon hiện dần khi nút đã đủ lớn
@@ -762,4 +916,6 @@ class Island:
             icon = self.nav_icon(kind, icon_col, size=22).copy()
             icon.set_alpha(int(255 * min(1.0, (nt - 0.45) / 0.55)))
             surf.blit(icon, icon.get_rect(center=(cx, cy)))      # cùng toạ độ nguyên với vòng tròn nên luôn căn giữa
-        self.add_hit(hit, fn)
+        # Chỉ nhận sự kiện click khi thanh điều hướng đã mở rộng (nt >= 0.6)
+        if nt >= 0.6:
+            self.add_hit(hit, fn)
