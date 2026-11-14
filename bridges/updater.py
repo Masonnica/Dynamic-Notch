@@ -3,6 +3,7 @@ Cầu nối kiểm tra và tự động cập nhật Dynamic Notch từ GitHub R
 Kho lưu trữ: https://github.com/Masonnica/Dynamic-Notch
 """
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -35,37 +36,58 @@ class UpdaterBridge:
 
     def _run_check(self, auto_download):
         try:
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "DynamicNotch-App"}
-            resp = requests.get(url, headers=headers, timeout=10)
+            clean_tag = None
+            download_url = None
+            release_body = ""
 
-            if resp.status_code == 404:
-                with self._lock:
-                    self.status = "up_to_date"
-                    self.message = f"Phiên bản v{APP_VERSION} là mới nhất (chưa có release)."
-                return
+            # Cách 1: Thử gọi GitHub API
+            try:
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+                headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "DynamicNotch-App"}
+                resp = requests.get(url, headers=headers, timeout=8)
+                if resp.status_code == 404:
+                    with self._lock:
+                        self.status = "up_to_date"
+                        self.message = f"Phiên bản v{APP_VERSION} là mới nhất (chưa có release)."
+                    return
 
-            if not resp.ok:
+                if resp.ok:
+                    data = resp.json()
+                    raw_tag = data.get("tag_name", "").strip()
+                    clean_tag = raw_tag.lstrip("vV").strip()
+                    release_body = data.get("body", "")
+                    for asset in data.get("assets", []):
+                        if asset.get("name", "").lower().endswith(".exe"):
+                            download_url = asset.get("browser_download_url")
+                            break
+            except Exception:
+                pass
+
+            # Cách 2 (Dự phòng khi GitHub API bị giới hạn 403 Rate Limit):
+            # Lấy thông tin chuyển hướng từ trang web GitHub releases (không bị giới hạn Rate Limit)
+            if not clean_tag:
+                web_url = f"https://github.com/{GITHUB_REPO}/releases/latest"
+                r_head = requests.head(web_url, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=False, timeout=10)
+                loc = r_head.headers.get("Location") or (r_head.headers.get("location") if hasattr(r_head, "headers") else None)
+                if loc and "/releases/tag/" in loc:
+                    raw_tag = loc.split("/releases/tag/")[-1].strip()
+                    clean_tag = raw_tag.lstrip("vV").strip()
+
+                    # Lấy link tải file .exe từ expanded_assets của release đó
+                    assets_page = f"https://github.com/{GITHUB_REPO}/releases/expanded_assets/{raw_tag}"
+                    r_assets = requests.get(assets_page, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                    if r_assets.ok:
+                        m_exe = re.search(r'href="(/[^"]+releases/download/[^"]+\.exe)"', r_assets.text)
+                        if m_exe:
+                            download_url = f"https://github.com{m_exe.group(1)}"
+
+            if not clean_tag:
                 with self._lock:
                     self.status = "error"
-                    self.message = f"Lỗi máy chủ GitHub ({resp.status_code})"
+                    self.message = "Không thể kiểm tra bản cập nhật lúc này"
                 return
 
-            data = resp.json()
-            # Xử lý cả 'v', 'V' hoặc chuỗi version thuần túy
-            raw_tag = data.get("tag_name", "").strip()
-            clean_tag = raw_tag.lstrip("vV").strip()
-            self.release_notes = data.get("body", "")
-
-            # Tìm file cài đặt .exe trong assets
-            assets = data.get("assets", [])
-            download_url = None
-            for asset in assets:
-                name = asset.get("name", "").lower()
-                if name.endswith(".exe"):
-                    download_url = asset.get("browser_download_url")
-                    break
-
+            self.release_notes = release_body
             is_newer = self._compare_versions(clean_tag, APP_VERSION) > 0
 
             with self._lock:
