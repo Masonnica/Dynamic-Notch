@@ -102,6 +102,7 @@ class MediaBridge:
         cached_title = ""
         cached_artist = ""
         cached_app_id = ""
+        last_sig, last_props_t, last_pos = None, 0.0, 0.0      # chữ ký bài hát / lần hỏi metadata cuối / vị trí trước đó
 
         # Biến theo dõi để định kỳ kích hoạt GC dọn dẹp các wrapper C++/COM
         poll_count = 0
@@ -208,15 +209,24 @@ class MediaBridge:
                         except Exception:
                             app_id = ""
 
-                        # Lấy metadata bài hát
+                        # Lấy metadata bài hát. try_get_media_properties_async() là thao tác WinRT bất đồng bộ; gọi nó 2 lần/giây
+                        # suốt nhiều giờ làm bộ nhớ gốc (C/WinRT) tăng dần, nên chỉ hỏi khi có dấu hiệu đổi bài:
+                        #   - đổi ứng dụng phát / đổi độ dài bài ("chữ ký"), hoặc vị trí nhảy lùi (phát lại / bài mới cùng độ dài)
+                        #   - hoặc làm tươi định kỳ 10 giây như lưới an toàn
+                        sig = (app_id, int(dur))
+                        jumped_back = pos < last_pos - 2.0
+                        last_pos = pos
                         props = None
-                        try:
-                            props = await s.try_get_media_properties_async()
-                        except Exception:
-                            props = None
+                        if sig != last_sig or jumped_back or now - last_props_t > 10.0:
+                            try:
+                                props = await s.try_get_media_properties_async()
+                            except Exception:
+                                props = None
+                            cached_title = (props.title or "").strip() if props else ""
+                            cached_artist = (props.artist or "").strip() if props else ""
+                            last_sig, last_props_t = sig, now
 
-                        title = (props.title or "").strip() if props else ""
-                        artist = (props.artist or "").strip() if props else ""
+                        title, artist = cached_title, cached_artist
 
                         # Fallback tên ứng dụng nếu không có title
                         if not title and app_id:
@@ -250,7 +260,7 @@ class MediaBridge:
                 MediaBridge._mgr = None
             with self._lock:
                 self._info = info
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5 if info.get("playing") else 1.5)   # đang phát 0.5s; tạm dừng / không có nhạc 1.5s
 
     @staticmethod
     def command(name):

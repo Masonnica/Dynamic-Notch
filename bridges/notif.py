@@ -40,7 +40,9 @@ class NotifBridge:
                     status = await listener.request_access_async()   # chưa hỏi lần nào -> xin quyền
                 if status == UserNotificationListenerAccessStatus.ALLOWED:
                     self.status = "allowed"
-                    n = len(await listener.get_notifications_async(NotificationKinds.TOAST))   # đếm toast đang chờ
+                    items = await listener.get_notifications_async(NotificationKinds.TOAST)   # đếm toast đang chờ
+                    n = len(items)
+                    del items                                # thả sớm danh sách UserNotification (mỗi cái kèm nội dung toast)
                 else:
                     self.status = "denied"
                     if not warned:
@@ -51,4 +53,4 @@ class NotifBridge:
                 self.status = "error"
             with self._lock:
                 self._count = n
-            await asyncio.sleep(2 if self.status == "allowed" else 8)   # hỏi lại: 2 giây/lần (hoặc 8 giây nếu chưa có quyền)
+            await asyncio.sleep(4 if self.status == "allowed" else 15)   # hỏi lại: 4 giây/lần (hoặc 15 giây nếu chưa có quyền)

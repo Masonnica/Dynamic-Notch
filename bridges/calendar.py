@@ -133,9 +133,12 @@ def parse_ics_content(text, cal_id, default_name, color):
             start_hm = dt_start.strftime("%H:%M")
             if dt_end and isinstance(dt_end, datetime) and dt_end.date() == d:
                 time_label = f"{start_hm} - {dt_end.strftime('%H:%M')}"
+                duration_min = max(5, int((dt_end - dt_start).total_seconds() / 60))
             else:
                 time_label = start_hm
+                duration_min = 60  # Mặc định 60 phút nếu không có end time
             key = start_hm
+            start_min = dt_start.hour * 60 + dt_start.minute
             events_by_date.setdefault(d, []).append({
                 "key": key,
                 "time_label": time_label,
@@ -143,6 +146,8 @@ def parse_ics_content(text, cal_id, default_name, color):
                 "color": color,
                 "cal_id": cal_id,
                 "cal_name": cal_name,
+                "start_min": start_min,
+                "duration_min": duration_min,
             })
 
     return cal_name, events_by_date

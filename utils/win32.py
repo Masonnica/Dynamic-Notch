@@ -4,6 +4,7 @@ Các hàm gọi API Windows (Win32, Shell, OLE Drag & Drop, Icon trích xuất).
 import os
 import math
 import time
+import collections
 import ctypes
 import threading
 from ctypes import wintypes
@@ -191,7 +192,7 @@ def cursor_pos():
 
 # ---- Cache trạng thái chuột toàn cục: đọc 1 lần/frame rồi dùng lại ----
 _mouse_state_cache = {}   # {button: state_int} được reset mỗi frame bởi poll_mouse()
-_mouse_clicked_events = []  # danh sách các sự kiện click [(button, (x, y), window)]
+_mouse_clicked_events = collections.deque(maxlen=64)  # các sự kiện click [(button, (x, y), window)]; giới hạn 64 vì chưa có nơi nào gọi consume_clicks()
 _mouse_polled = False
 
 
